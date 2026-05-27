@@ -9,7 +9,9 @@
   RewriteCond %{REQUEST_FILENAME} !-d
   RewriteCond %{REQUEST_URI} !^/api(/|$)
   RewriteRule . index.html [L]
+</IfModule>
 
+<IfModule mod_headers.c>
   # Cache static assets
   Header set Cache-Control "max-age=31536000" "expr=%{REQUEST_URI} =~ /\.(js|css)$/"
   Header set Cache-Control "max-age=0" "expr=%{REQUEST_URI} =~ /\.html$/"
