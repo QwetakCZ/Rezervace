@@ -2,10 +2,12 @@
   RewriteEngine On
 
   # SPA fallback: všechny neexistující cesty jdou na index.html
+  # POKUD nejde o /api obsah (backend API)
   RewriteBase /
   RewriteRule ^index\.html$ - [L]
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteCond %{REQUEST_URI} !^/api(/|$)
   RewriteRule . index.html [L]
 
   # Cache static assets
