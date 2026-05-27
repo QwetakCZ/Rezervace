@@ -1,0 +1,30 @@
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs and runtime data
+*.log
+api/log/*
+!api/log/.gitignore
+!api/log/.gitkeep
+api/temp/*
+!api/temp/.gitkeep
+
+# Dependencies
+api/vendor/
+node_modules/
+
+# Frontend build output (if source is restored later)
+dist/
+dist_output/
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+!.env.production.example
+!.env.local.example
+api/app/config/local.neon
+

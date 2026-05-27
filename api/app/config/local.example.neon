@@ -1,0 +1,5 @@
+database:
+	dsn: 'mysql:host=127.0.0.1;dbname=stolni_tenis_rezervace;charset=utf8mb4'
+	user: root
+	password: ''
+
