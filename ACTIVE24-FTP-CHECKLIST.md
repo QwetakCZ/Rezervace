@@ -127,10 +127,11 @@ Měl by vrátit HTML obsah (`index.html`).
 
 Pro databázi si vytoříš MySQL na Active24 (cPanel → MySQL databases):
 
-- databáze: `rezervace_db`
+- databáze: `stolni_tenis_rezervace`
 - uživatel: `rezervace_user`
 - heslo: *tvoje volba*
 - host: `localhost` nebo `127.0.0.1`
 
 Pak dluji SQL script pro import schématu — dej vědět a připravím ho.
+
 

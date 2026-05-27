@@ -55,9 +55,9 @@ Pak zkopíruješ obsah z `C:\xampp\htdocs\Rezervace\backend\.env.production.tt-d
 
 Vytvoříš v cPanelu na Active24:
 
-1. **MySQL Databases**: vytvoř databázi `rezervace_db`
+1. **MySQL Databases**: vytvoř databázi `stolni_tenis_rezervace`
 2. **MySQL Uživatelé**: vytvoř uživatele `rezervace_user` s heslem
-3. **Udělení práv**: dej mu práva na `rezervace_db.*`
+3. **Udělení práv**: dej mu práva na `stolni_tenis_rezervace.*`
 4. **phpMyAdmin**: importuj `dump_db.sql` z repozitáře
 
 ---
@@ -73,7 +73,7 @@ Doma:
   [ ] .htaccess jsem si připravil (přepíšu text z APACHE-HTACCESS.txt)
 
 Na Active24:
-  [ ] Vytvořil jsem databázi "rezervace_db"
+  [ ] Vytvořil jsem databázi "stolni_tenis_rezervace"
   [ ] Vytvořil jsem uživatele "rezervace_user" s heslem
   [ ] Importoval jsem dump_db.sql (v phpMyAdmin)
 
@@ -150,4 +150,6 @@ Na základě těchto informací ti připravím finální skripty a si je jen mus
 ✅ FTP návod  
 
 Jakmile si připravíš prostředí na Active24 (DB, SSH pokud chceš), řekni mi a dám ti přesné spouštěcí skripty.
+
+
 

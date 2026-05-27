@@ -39,14 +39,14 @@ Ověř, že API funguje na `http://localhost:4000`.
 ### Via cPanel (nejjednodušší)
 
 1. Jdi do cPanel → "MySQL Databases"
-2. Vytvoř databázi: `rezervace_db`
+2. Vytvoř databázi: `stolni_tenis_rezervace`
 3. Vytvoř uživatele: `rezervace_user` s heslem
-4. Dej mu práva na `rezervace_db.*` (SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX)
+4. Dej mu práva na `stolni_tenis_rezervace.*` (SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX)
 
 ### IV phpMyAdmin (import schématu)
 
 1. Otevřeš phpMyAdmin v cPanelu
-2. Jdeš do `rezervace_db`
+2. Jdeš do `stolni_tenis_rezervace`
 3. Klikneš na "Import"
 4. Uploaduješ `dump_db.sql` z repozitáře
 5. Klikneš "Go"
@@ -210,4 +210,6 @@ Když máš informace níž, napíšu ti konkrétní skripty:
 - [ ] Jaké databázové credentials si chceš vybrat?
 
 Teď máš vše potřebné. Pokud by sis něco vyjasnit, dej vědět a jedu dál.
+
+
 
