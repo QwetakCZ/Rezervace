@@ -10,7 +10,7 @@ param(
     [string]$Environment = "development",
 
     [Parameter(Mandatory=$false)]
-    [string]$ApiUrl = "http://localhost:4000",
+    [string]$ApiUrl = "",
 
     [Parameter(Mandatory=$false)]
     [string]$OutputDir = "C:\xampp\htdocs\Rezervace\dist_output"
@@ -36,7 +36,12 @@ Write-Host "  → Instalace závislostí..." -ForegroundColor Gray
 npm install
 
 Write-Host "  → Build..." -ForegroundColor Gray
-$env:VITE_API_URL = $ApiUrl
+if ($ApiUrl -ne "") {
+    $env:VITE_API_URL = $ApiUrl
+} else {
+    # Nechat Vite načíst .env.production (obsahuje správnou produkční URL)
+    Remove-Item Env:VITE_API_URL -ErrorAction SilentlyContinue
+}
 npm run build
 
 if (-not $?) {
