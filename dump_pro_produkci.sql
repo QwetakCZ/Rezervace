@@ -16,10 +16,12 @@
 
 
 -- Exportování struktury databáze pro
+DROP DATABASE IF EXISTS `stolni_tenis_rezervace`;
 CREATE DATABASE IF NOT EXISTS `stolni_tenis_rezervace` /*!40100 DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci */;
 USE `stolni_tenis_rezervace`;
 
 -- Exportování struktury pro tabulka stolni_tenis_rezervace.categories
+DROP TABLE IF EXISTS `categories`;
 CREATE TABLE IF NOT EXISTS `categories` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `company_id` int(11) NOT NULL,
@@ -33,7 +35,8 @@ CREATE TABLE IF NOT EXISTS `categories` (
 ) ENGINE=InnoDB AUTO_INCREMENT=9 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Exportování dat pro tabulku stolni_tenis_rezervace.categories: ~7 rows (přibližně)
-REPLACE INTO `categories` (`id`, `company_id`, `name`, `description`, `icon`, `default_slot_duration`) VALUES
+DELETE FROM `categories`;
+INSERT INTO `categories` (`id`, `company_id`, `name`, `description`, `icon`, `default_slot_duration`) VALUES
 	(1, 1, 'Stolní tenis', NULL, NULL, 30),
 	(2, 1, 'Robot', NULL, NULL, 30),
 	(3, 1, 'Trénink s trenérem', NULL, NULL, 30),
@@ -42,6 +45,7 @@ REPLACE INTO `categories` (`id`, `company_id`, `name`, `description`, `icon`, `d
 	(6, 2, 'Trénink s trenérem', NULL, NULL, 30);
 
 -- Exportování struktury pro tabulka stolni_tenis_rezervace.companies
+DROP TABLE IF EXISTS `companies`;
 CREATE TABLE IF NOT EXISTS `companies` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `name` varchar(255) NOT NULL,
@@ -54,11 +58,13 @@ CREATE TABLE IF NOT EXISTS `companies` (
 ) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Exportování dat pro tabulku stolni_tenis_rezervace.companies: ~2 rows (přibližně)
-REPLACE INTO `companies` (`id`, `name`, `timezone`, `brand_color`, `background_color`, `text_color`, `created_at`) VALUES
+DELETE FROM `companies`;
+INSERT INTO `companies` (`id`, `name`, `timezone`, `brand_color`, `background_color`, `text_color`, `created_at`) VALUES
 	(1, 'Table Tennis Academy', 'Europe/Prague', '#10d2a2', '#06070c', '#f4f5f7', '2026-02-22 09:39:24'),
 	(2, 'Table Tenis Academy - Znojmo', 'Europe/Prague', '#10d2a2', '#06070c', '#f4f5f7', '2026-05-19 21:22:38');
 
 -- Exportování struktury pro tabulka stolni_tenis_rezervace.company_booking_settings
+DROP TABLE IF EXISTS `company_booking_settings`;
 CREATE TABLE IF NOT EXISTS `company_booking_settings` (
   `company_id` int(11) NOT NULL,
   `min_advance_minutes` int(11) NOT NULL DEFAULT 120,
@@ -68,10 +74,12 @@ CREATE TABLE IF NOT EXISTS `company_booking_settings` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Exportování dat pro tabulku stolni_tenis_rezervace.company_booking_settings: ~0 rows (přibližně)
-REPLACE INTO `company_booking_settings` (`company_id`, `min_advance_minutes`, `updated_at`) VALUES
+DELETE FROM `company_booking_settings`;
+INSERT INTO `company_booking_settings` (`company_id`, `min_advance_minutes`, `updated_at`) VALUES
 	(2, 300, '2026-05-24 22:14:44');
 
 -- Exportování struktury pro tabulka stolni_tenis_rezervace.pricing_windows
+DROP TABLE IF EXISTS `pricing_windows`;
 CREATE TABLE IF NOT EXISTS `pricing_windows` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `category_id` int(11) NOT NULL,
@@ -88,7 +96,8 @@ CREATE TABLE IF NOT EXISTS `pricing_windows` (
 ) ENGINE=InnoDB AUTO_INCREMENT=54 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Exportování dat pro tabulku stolni_tenis_rezervace.pricing_windows: ~6 rows (přibližně)
-REPLACE INTO `pricing_windows` (`id`, `category_id`, `resource_id`, `day_of_week`, `time_from`, `time_to`, `price_per_slot`) VALUES
+DELETE FROM `pricing_windows`;
+INSERT INTO `pricing_windows` (`id`, `category_id`, `resource_id`, `day_of_week`, `time_from`, `time_to`, `price_per_slot`) VALUES
 	(43, 4, 7, 1, '08:00:00', '10:00:00', 50.00),
 	(44, 4, 8, 1, '08:00:00', '10:00:00', 50.00),
 	(45, 4, 9, 1, '08:00:00', '10:00:00', 50.00),
@@ -98,6 +107,7 @@ REPLACE INTO `pricing_windows` (`id`, `category_id`, `resource_id`, `day_of_week
 	(53, 6, 14, 1, '08:00:00', '20:00:00', 250.00);
 
 -- Exportování struktury pro tabulka stolni_tenis_rezervace.reservation_slots
+DROP TABLE IF EXISTS `reservation_slots`;
 CREATE TABLE IF NOT EXISTS `reservation_slots` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `reservation_id` int(11) NOT NULL,
@@ -113,8 +123,9 @@ CREATE TABLE IF NOT EXISTS `reservation_slots` (
   CONSTRAINT `fk_slot_resource` FOREIGN KEY (`resource_id`) REFERENCES `resources` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB AUTO_INCREMENT=24 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Exportování dat pro tabulku stolni_tenis_rezervace.reservation_slots: ~19 rows (přibližně)
-REPLACE INTO `reservation_slots` (`id`, `reservation_id`, `resource_id`, `date`, `time_start`, `time_end`, `price`) VALUES
+-- Exportování dat pro tabulku stolni_tenis_rezervace.reservation_slots: ~17 rows (přibližně)
+DELETE FROM `reservation_slots`;
+INSERT INTO `reservation_slots` (`id`, `reservation_id`, `resource_id`, `date`, `time_start`, `time_end`, `price`) VALUES
 	(4, 2, 1, '2026-02-23', '14:00:00', '14:30:00', 50.00),
 	(5, 3, 6, '2026-02-23', '10:30:00', '11:00:00', 250.00),
 	(6, 3, 6, '2026-02-23', '11:00:00', '11:30:00', 250.00),
@@ -137,6 +148,7 @@ REPLACE INTO `reservation_slots` (`id`, `reservation_id`, `resource_id`, `date`,
 	(23, 11, 9, '2026-06-01', '09:00:00', '09:30:00', 50.00);
 
 -- Exportování struktury pro tabulka stolni_tenis_rezervace.reservations
+DROP TABLE IF EXISTS `reservations`;
 CREATE TABLE IF NOT EXISTS `reservations` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `company_id` int(11) NOT NULL,
@@ -155,8 +167,9 @@ CREATE TABLE IF NOT EXISTS `reservations` (
   CONSTRAINT `fk_res_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB AUTO_INCREMENT=12 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Exportování dat pro tabulku stolni_tenis_rezervace.reservations: ~10 rows (přibližně)
-REPLACE INTO `reservations` (`id`, `company_id`, `user_id`, `category_id`, `total_price`, `status`, `note`, `created_at`) VALUES
+-- Exportování dat pro tabulku stolni_tenis_rezervace.reservations: ~9 rows (přibližně)
+DELETE FROM `reservations`;
+INSERT INTO `reservations` (`id`, `company_id`, `user_id`, `category_id`, `total_price`, `status`, `note`, `created_at`) VALUES
 	(2, 1, 3, 1, 50.00, 'confirmed', NULL, '2026-02-22 18:33:35'),
 	(3, 1, 4, 3, 500.00, 'confirmed', NULL, '2026-02-23 14:12:54'),
 	(4, 1, 5, 2, 400.00, 'confirmed', NULL, '2026-02-24 14:24:08'),
@@ -169,6 +182,7 @@ REPLACE INTO `reservations` (`id`, `company_id`, `user_id`, `category_id`, `tota
 	(11, 2, 9, 4, 100.00, 'pending', NULL, '2026-05-27 17:04:36');
 
 -- Exportování struktury pro tabulka stolni_tenis_rezervace.resources
+DROP TABLE IF EXISTS `resources`;
 CREATE TABLE IF NOT EXISTS `resources` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `category_id` int(11) NOT NULL,
@@ -180,7 +194,8 @@ CREATE TABLE IF NOT EXISTS `resources` (
 ) ENGINE=InnoDB AUTO_INCREMENT=15 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Exportování dat pro tabulku stolni_tenis_rezervace.resources: ~12 rows (přibližně)
-REPLACE INTO `resources` (`id`, `category_id`, `name`, `is_active`) VALUES
+DELETE FROM `resources`;
+INSERT INTO `resources` (`id`, `category_id`, `name`, `is_active`) VALUES
 	(1, 1, 'Stůl 1', 1),
 	(2, 1, 'Stůl 2', 1),
 	(5, 2, 'Robot', 1),
@@ -195,6 +210,7 @@ REPLACE INTO `resources` (`id`, `category_id`, `name`, `is_active`) VALUES
 	(14, 6, 'Fanda :)', 1);
 
 -- Exportování struktury pro tabulka stolni_tenis_rezervace.users
+DROP TABLE IF EXISTS `users`;
 CREATE TABLE IF NOT EXISTS `users` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `company_id` int(11) NOT NULL,
@@ -213,7 +229,8 @@ CREATE TABLE IF NOT EXISTS `users` (
 ) ENGINE=InnoDB AUTO_INCREMENT=14 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Exportování dat pro tabulku stolni_tenis_rezervace.users: ~10 rows (přibližně)
-REPLACE INTO `users` (`id`, `company_id`, `role`, `email`, `password_hash`, `first_name`, `last_name`, `phone`, `current_credit`, `created_at`) VALUES
+DELETE FROM `users`;
+INSERT INTO `users` (`id`, `company_id`, `role`, `email`, `password_hash`, `first_name`, `last_name`, `phone`, `current_credit`, `created_at`) VALUES
 	(1, 1, 'admin', 'admin@pincarna.cz', '$2y$10$vW9U5Q6...HashHesla...', 'Admin', 'Admin', NULL, 0.00, '2026-02-22 09:39:25'),
 	(3, 1, 'player', 'janNovak45613@hjfkla.cz', '', 'Jan', 'Novak', '+420773512385', 0.00, '2026-02-22 19:33:35'),
 	(4, 1, 'player', 'jiri@zacek.cz', '', 'Jiri', 'Zacek', '777222333', 0.00, '2026-02-23 15:12:54'),
