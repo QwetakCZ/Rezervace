@@ -1,0 +1,57 @@
+# =================================================================
+# .htaccess pro adresář subdomény: tt-denik/sub/rezervace/
+#
+# POSTUP INSTALACE:
+#   1. Zkopírujte tento soubor jako .htaccess do ~/tt-denik/sub/rezervace/
+#   2. Backend musí běžet: pm2 start ~/Rezervace/backend/ecosystem.config.cjs
+#   3. Ověřte: curl http://127.0.0.1:4001/api/health
+#
+# ARCHITEKTURA:
+#   Browser → Apache (port 80/443) → /api/* → Node.js (port 4001)
+#                                 → /*     → React SPA (index.html)
+# =================================================================
+
+# Povolení Apache proxy pro přesměrování /api na Node.js backend
+<IfModule mod_proxy.c>
+    ProxyPreserveHost On
+    ProxyRequests Off
+
+    # Proxy /api/* požadavky na Node.js backend (port 4001)
+    ProxyPass /api http://127.0.0.1:4001/api
+    ProxyPassReverse /api http://127.0.0.1:4001/api
+</IfModule>
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+
+    # Pokud mod_proxy není dostupný, zkuste RewriteRule s [P] příznakem
+    # (záloha – obvykle stačí ProxyPass výše)
+    # RewriteRule ^api/(.*) http://127.0.0.1:4001/api/$1 [P,L]
+
+    # DŮLEŽITÉ: Nerewritovat /api requesty (jsou vyřízeny proxy výše)
+    RewriteCond %{REQUEST_URI} ^/api(/|$) [NC]
+    RewriteRule ^ - [L]
+
+    # SPA fallback: pokud soubor/složka neexistuje → index.html
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule . index.html [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+    # Cache pro statické assety (JS, CSS, fonty) – 1 rok
+    <FilesMatch "\.(js|css|woff2?|ttf|eot|svg|png|jpg|ico)$">
+        Header set Cache-Control "max-age=31536000, immutable"
+    </FilesMatch>
+
+    # Nikdy necachovat HTML (kvůli SPA routingu)
+    <FilesMatch "\.html$">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+    </FilesMatch>
+
+    # Bezpečnostní hlavičky
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+</IfModule>
+
