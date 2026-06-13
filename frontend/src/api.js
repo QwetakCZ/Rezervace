@@ -4,9 +4,28 @@ function normalizeBaseUrl(value) {
   return value.replace(/\/+$/, "");
 }
 
-const apiBases = configuredApiUrl
-  ? [normalizeBaseUrl(configuredApiUrl)]
-  : ["", "http://localhost:4000", "http://127.0.0.1:4000"];
+// API base: relativní cesta (funguje na localhostu i subdoméně)
+// Např. pro /Rezervace/deploy/ vrátí /Rezervace/deploy
+// Pro subdoménu (/) vrátí prázdný string
+function detectApiBase() {
+  if (configuredApiUrl) {
+    return normalizeBaseUrl(configuredApiUrl);
+  }
+  // Detekce z URL stránky - odebere poslední segment (index.html nebo SPA route)
+  const path = window.location.pathname;
+  // Pokud jsme v rootu, vrať prázdný string
+  if (path === '/' || path === '') return '';
+  // Jinak vezmi složku, kde je aplikace
+  const parts = path.split('/').filter(Boolean);
+  // Odstraň poslední část pokud to není složka (SPA routing)
+  // a přidej zpět lomítka
+  if (parts.length > 0 && !path.endsWith('/')) {
+    parts.pop(); // odeber index.html nebo SPA route
+  }
+  return parts.length > 0 ? '/' + parts.join('/') : '';
+}
+
+const apiBase = detectApiBase();
 
 const ADMIN_TOKEN_KEY = "rezervace_admin_token";
 const PLAYER_TOKEN_KEY = "rezervace_player_token";
@@ -59,50 +78,36 @@ async function request(path, options = {}) {
     ...(fetchOptions.headers || {}),
   };
 
+  let token = '';
   if (auth) {
-    const token = getAdminToken();
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
+    token = getAdminToken();
   } else if (playerAuth) {
-    const token = getPlayerToken();
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
+    token = getPlayerToken();
+  }
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
   }
 
   if (Object.keys(headers).length > 0) {
     fetchOptions.headers = headers;
   }
 
-  let lastNetworkError = null;
-
-  for (const base of apiBases) {
-    const url = `${base}${path}`;
-
-    try {
-      const response = await fetch(url, fetchOptions);
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(data.error || `API chyba (${response.status})`);
-      }
-
-      return data;
-    } catch (error) {
-      // On network errors (Failed to fetch), try next base URL.
-      if (error instanceof TypeError) {
-        lastNetworkError = error;
-        continue;
-      }
-
-      throw error;
-    }
+  // Fallback pro nginx: pošli token i jako query parametr
+  let url = `${apiBase}${path}`;
+  if (token) {
+    const sep = url.includes('?') ? '&' : '?';
+    url = `${url}${sep}_token=${encodeURIComponent(token)}`;
   }
 
-  throw new Error(
-    `Nepodarilo se pripojit k API (${apiBases.join(", ")}). ${lastNetworkError?.message || ""}`.trim()
-  );
+  const response = await fetch(url, fetchOptions);
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || `API chyba (${response.status})`);
+  }
+
+  return data;
 }
 
 export const api = {

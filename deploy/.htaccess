@@ -1,0 +1,27 @@
+RewriteEngine On
+
+# --- Předání Authorization headeru do PHP (jinak $_SERVER['HTTP_AUTHORIZATION'] je prázdné!) ---
+RewriteCond %{HTTP:Authorization} .
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+# --- API: přesměrovat na PHP API ---
+# RewriteRule je relativní k deploy složce, takže "api/health" -> "api/index.php"
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^api/(.*)$ api/index.php [QSA,L]
+
+# --- Statické soubory (existující) servírovat přímo ---
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# --- SPA fallback: vše ostatní -> index.html ---
+RewriteRule ^ index.html [L]
+
+# --- Bezpečnost ---
+<FilesMatch "\.(env|config|sql|md|json|lock)$">
+    Require all denied
+</FilesMatch>
+
+<FilesMatch "^api/(config|db|auth)\.php$">
+    Require all denied
+</FilesMatch>

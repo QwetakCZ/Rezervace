@@ -2,15 +2,14 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  base: "/",
+  base: "./",
   plugins: [react()],
   build: {
-    // Optimalizace pro iframe - vypnutí hash v názvech pro snazší integraci
     rollupOptions: {
       output: {
-        entryFileNames: '[name].js',
-        chunkFileNames: '[name].js',
-        assetFileNames: '[name][extname]'
+        entryFileNames: 'index-[hash].js',
+        chunkFileNames: '[name]-[hash].js',
+        assetFileNames: '[name]-[hash][extname]'
       }
     }
   },
