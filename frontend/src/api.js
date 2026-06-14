@@ -197,6 +197,13 @@ export const api = {
     return data;
   },
   getAdminProfile: () => request("/api/admin/me", { auth: true }),
+  updateMyNotify: (notifyEmails) =>
+    request("/api/admin/me", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notifyEmails }),
+      auth: true,
+    }),
   getAdminCompanies: () => request("/api/admin/companies", { auth: true }),
   getAdminCategories: (companyId = "") => {
     const params = new URLSearchParams();
@@ -340,6 +347,15 @@ export const api = {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason }),
+      auth: true,
+    }),
+  getEmailLogs: () => request("/api/admin/email-logs", { auth: true }),
+  getEmailTemplates: () => request("/api/admin/email-templates", { auth: true }),
+  saveEmailTemplate: (type, subject, bodyHtml) =>
+    request("/api/admin/email-templates", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type, subject, bodyHtml }),
       auth: true,
     }),
 };

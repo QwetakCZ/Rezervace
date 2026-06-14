@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rezervační systém - Příklad vložení jako iframe</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            background: white;
+            padding: 40px 20px;
+            border-radius: 12px 12px 0 0;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            margin-bottom: 0;
+        }
+
+        header h1 {
+            color: #333;
+            font-size: 28px;
+            margin-bottom: 8px;
+        }
+
+        header p {
+            color: #666;
+            font-size: 16px;
+        }
+
+        .info-box {
+            background: #f0f4ff;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+
+        .info-box h3 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .info-box p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .info-box code {
+            background: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: "Courier New", monospace;
+            font-size: 13px;
+            color: #d63384;
+        }
+
+        .frame-container {
+            background: white;
+            padding: 20px;
+            border-radius: 0 0 12px 12px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+            overflow: hidden;
+        }
+
+        .frame-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .frame-title::before {
+            content: "📱";
+            font-size: 20px;
+        }
+
+        iframe {
+            width: 100%;
+            height: 900px;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            transition: height 0.3s ease;
+        }
+
+        @media (max-width: 768px) {
+            iframe {
+                height: 1200px;
+            }
+
+            header h1 {
+                font-size: 22px;
+            }
+        }
+
+        footer {
+            color: white;
+            text-align: center;
+            margin-top: 30px;
+            padding: 20px;
+            font-size: 14px;
+        }
+
+        footer a {
+            color: #fff;
+            text-decoration: none;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.5);
+        }
+
+        footer a:hover {
+            border-bottom-color: white;
+        }
+
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-top: 30px;
+        }
+
+        .feature {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .feature h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .feature p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .feature::before {
+            display: block;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .feature.reservations::before {
+            content: "📅";
+        }
+
+        .feature.responsive::before {
+            content: "📱";
+        }
+
+        .feature.secure::before {
+            content: "🔒";
+        }
+
+        .feature.icons::before {
+            content: "🎨";
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🏓 Rezervační Systém Stolního Tenisu</h1>
+            <p>Profesionální vložení jako iframe na libovolný web</p>
+        </header>
+
+        <div class="info-box">
+            <h3>ℹ️ O tomto příkladu</h3>
+            <p>
+                Tato stránka demonstruje, jak vložit rezervační systém jako <code>&lt;iframe&gt;</code>
+                na vaši webovou stránku. Aplikace je plně funkční a komunikuje s backendem přes API.
+            </p>
+        </div>
+
+        <div class="features">
+            <div class="feature reservations">
+                <h3>Rezervace online</h3>
+                <p>Zákazníci si mohou rezervovat čas přímo z vašeho webu.</p>
+            </div>
+            <div class="feature responsive">
+                <h3>Responzivní design</h3>
+                <p>Funguje na všech zařízeních - desktop, tablet i mobilní telefon.</p>
+            </div>
+            <div class="feature secure">
+                <h3>Bezpečné</h3>
+                <p>HTTPS komunikace, CORS konfigurace a bezpečné tokenů pro adminy.</p>
+            </div>
+            <div class="feature icons">
+                <h3>Profesionální ikony</h3>
+                <p>Integrace Lucide ikon pro krásný a moderní vzhled.</p>
+            </div>
+        </div>
+
+        <div class="frame-container">
+            <div class="frame-title">Embeded Rezervační Systém</div>
+            <iframe
+                src="/"
+                title="Rezervační systém"
+                allowTransparency="true"
+                allow="geolocation; microphone; camera"
+            ></iframe>
+        </div>
+
+        <footer>
+            <p>
+                Dokumentace: <a href="/EMBEDDING.md">EMBEDDING.md</a> |
+                Vyvinuto s ❤️ pro moderní webové rezervace
+            </p>
+        </footer>
+    </div>
+</body>
+</html>
+

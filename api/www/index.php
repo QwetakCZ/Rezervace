@@ -1,9 +1,4 @@
 <?php
-declare(strict_types=1);
-ini_set('display_errors', '1');
-error_reporting(E_ALL);
-
-require __DIR__ . '/../vendor/autoload.php';
-
-$container = App\Booting::boot()->createContainer();
-$container->getByType(Nette\Application\Application::class)->run();
+// Nový PHP backend - entry point pro localhost
+// Načte hlavní router z api/index.php
+require __DIR__ . '/../index.php';

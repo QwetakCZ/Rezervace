@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import {
   Trophy,
@@ -47,6 +47,59 @@ const DEFAULT_CLUB_THEME = Object.freeze({
   backgroundColor: "#06070c",
   textColor: "#f4f5f7",
 });
+
+const TEMPLATE_VARS_HELP = [
+  { var: "{{firstName}}", desc: "Křestní jméno zákazníka" },
+  { var: "{{lastName}}", desc: "Příjmení zákazníka" },
+  { var: "{{email}}", desc: "Email zákazníka" },
+  { var: "{{phone}}", desc: "Telefon zákazníka" },
+  { var: "{{companyName}}", desc: "Název klubu" },
+  { var: "{{date}}", desc: "Datum rezervace" },
+  { var: "{{slots}}", desc: "Seznam časů (např. 08:00, 08:30)" },
+  { var: "{{slotCount}}", desc: "Počet slotů" },
+  { var: "{{totalPrice}}", desc: "Celková cena" },
+  { var: "{{note}}", desc: "Poznámka zákazníka" },
+  { var: "{{reason}}", desc: "Důvod storna (pouze u storna)" },
+];
+
+function defaultTemplateSubject(type) {
+  if (type === "cancellation") return "Rezervace stornována – {{companyName}}";
+  return type === "confirmation"
+    ? "Rezervace potvrzena – {{companyName}}"
+    : "Shrnutí rezervace – {{companyName}}";
+}
+
+const EMAIL_STYLE = `<style>
+body{font-family:Arial,Helvetica,sans-serif;background:#f5f5f5;margin:0;padding:20px}
+.card{max-width:600px;margin:0 auto;background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.08)}
+h2{color:#1a1a1a;margin:0 0 8px;font-size:20px}
+p{margin:4px 0;color:#555;font-size:14px;line-height:1.6}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+td,th{padding:8px 12px;text-align:left;border-bottom:1px solid #eee;font-size:14px}
+th{color:#888;font-weight:600;font-size:12px;text-transform:uppercase}
+.price{font-size:18px;font-weight:700;color:#10b981}
+.note{background:#fff8e1;border-left:4px solid #ffc107;padding:12px;margin:12px 0;font-size:13px;color:#795548}
+.footer{margin-top:24px;padding-top:16px;border-top:1px solid #eee;color:#aaa;font-size:12px}
+</style>`;
+
+function wrapFullHtml(bodyContent) {
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">${EMAIL_STYLE}</head><body>\n${bodyContent}\n</body></html>`;
+}
+
+function extractBodyHtml(fullHtml) {
+  const m = fullHtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+  return m ? m[1].trim() : fullHtml;
+}
+
+function defaultTemplateBody(type) {
+  if (type === "cancellation") {
+    return `<div class=\"card\">\n<h2>❌ Rezervace stornována</h2>\n<p>Vaše rezervace v <strong>{{companyName}}</strong> byla <strong>zrušena</strong> administrátorem.</p>\n<hr style=\"border:0;border-top:1px solid #eee;margin:12px 0\">\n<table>\n<tr><th>Datum</th><td>{{date}}</td></tr>\n<tr><th>Časy</th><td>{{slots}}</td></tr>\n</table>\n<div class=\"note\">📝 Důvod: {{reason}}</div>\n<p style=\"margin-top:16px;color:#e11d48;font-weight:600\">Pokud máte dotazy, kontaktujte nás.</p>\n<div class=\"footer\">Rezervační systém • {{companyName}}</div>\n</div>`;
+  }
+  if (type === "confirmation") {
+    return `<div class="card">\n<h2>✅ Rezervace potvrzena</h2>\n<p>Vaše rezervace v <strong>{{companyName}}</strong> byla <strong>potvrzena</strong> administrátorem.</p>\n<hr style="border:0;border-top:1px solid #eee;margin:12px 0">\n<table>\n<tr><th>Datum</th><td>{{date}}</td></tr>\n<tr><th>Časy</th><td>{{slots}}</td></tr>\n</table>\n<p style="margin-top:16px;color:#10b981;font-weight:600">Těšíme se na Vás! 🏓</p>\n<div class="footer">Rezervační systém • {{companyName}}</div>\n</div>`;
+  }
+  return `<div class="card">\n<h2>🏓 Rezervace přijata</h2>\n<p>Děkujeme, <strong>{{firstName}}</strong>! Vaše rezervace v <strong>{{companyName}}</strong> byla přijata.</p>\n<hr style="border:0;border-top:1px solid #eee;margin:12px 0">\n<table>\n<tr><th>Datum</th><td>{{date}}</td></tr>\n<tr><th>Časy</th><td>{{slots}}</td></tr>\n<tr><th>Počet bloků</th><td>{{slotCount}} × 30 min</td></tr>\n<tr><th>Cena celkem</th><td class="price">{{totalPrice}} Kč</td></tr>\n</table>\n<div class="note">⏳ Po schválení administrátorem Vám přijde potvrzovací email.</div>\n{{#if note}}<p style="color:#888;font-size:13px">📝 Vaše poznámka: {{note}}</p>{{/if}}\n<div class="footer">Rezervační systém • {{companyName}}</div>\n</div>`;
+}
 
 const clubThemePresets = [
   {
@@ -279,27 +332,37 @@ function isContinuousSelection(slots, resource) {
     return true;
   }
 
+  // Zjistit délku slotu z dat (první dva po sobě jdoucí časy v timeline)
   const timeline = (resource.slots || [])
-    .map((item) => item.time_start)
+    .map((s) => s.time_start)
     .sort((a, b) => a.localeCompare(b));
-
-  const indexByStart = new Map(timeline.map((time, index) => [time, index]));
-  const indexes = slots
-    .map((slot) => indexByStart.get(slot.time_start))
-    .filter((value) => Number.isInteger(value))
-    .sort((a, b) => a - b);
-
-  if (indexes.length !== slots.length) {
-    return false;
+  
+  let slotMinutes = 30; // fallback
+  if (timeline.length >= 2) {
+    const diff = minutesBetween(timeline[0], timeline[1]);
+    if (diff > 0 && diff <= 120) slotMinutes = diff; // max 2h, pro jistotu
   }
 
-  for (let i = 1; i < indexes.length; i += 1) {
-    if (indexes[i] !== indexes[i - 1] + 1) {
+  // Seřadit vybrané sloty podle času
+  const sorted = [...slots].sort((a, b) => a.time_start.localeCompare(b.time_start));
+
+  // Každý následující slot musí navazovat přesně o slotMinutes
+  for (let i = 1; i < sorted.length; i += 1) {
+    const prev = sorted[i - 1].time_start;
+    const curr = sorted[i].time_start;
+    const expected = addMinutesToTime(prev, slotMinutes) + ":00";
+    if (curr !== expected) {
       return false;
     }
   }
 
   return true;
+}
+
+/** Vrátí počet minut mezi dvěma časy ve formátu HH:MM:SS nebo HH:MM */
+function minutesBetween(a, b) {
+  const parse = (t) => { const [h, m] = (t || "0:0").split(":").map(Number); return h * 60 + (m || 0); };
+  return parse(b) - parse(a);
 }
 
 function Stepper({ step }) {
@@ -353,6 +416,12 @@ function formatTimeShort(value) {
   return String(value || "").slice(0, 5);
 }
 
+function addMinutesToTime(timeStr, minutes) {
+  const [h, m, s] = (timeStr || "00:00:00").split(":").map(Number);
+  const d = new Date(2020, 0, 1, h || 0, (m || 0) + minutes, s || 0);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 function formatReservationTerm(slots) {
   const normalized = Array.isArray(slots)
     ? [...slots].sort((a, b) =>
@@ -384,27 +453,39 @@ function buildOverviewRowsForDate(reservations, targetDate) {
   const rows = [];
 
   for (const reservation of reservations) {
-    for (const slot of reservation.slots || []) {
-      if (extractDateKey(slot.date) !== targetDate) {
-        continue;
-      }
+    // Filtrovat sloty pro daný den
+    const daySlots = (reservation.slots || []).filter(
+      (s) => extractDateKey(s.date) === targetDate
+    );
+    if (daySlots.length === 0) continue;
 
-      rows.push({
-        reservationId: reservation.id,
-        status: reservation.status,
-        playerName:
-          `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim() ||
-          reservation.email ||
-          "Host",
-        resourceName: slot.resource_name,
-        timeStart: slot.time_start,
-        timeEnd: slot.time_end,
-        price: Number(slot.price || 0),
-      });
-    }
+    // Seřadit podle času
+    daySlots.sort((a, b) => String(a.time_start).localeCompare(String(b.time_start)));
+
+    const firstSlot = daySlots[0];
+    const lastSlot = daySlots[daySlots.length - 1];
+    const totalPrice = daySlots.reduce((sum, s) => sum + Number(s.price || 0), 0);
+    const timeStart = formatTimeShort(firstSlot.time_start);
+    const timeEnd = addMinutesToTime(lastSlot.time_start, 30);
+
+    // Unikátní zdroje
+    const resources = [...new Set(daySlots.map((s) => s.resource_name).filter(Boolean))];
+
+    rows.push({
+      reservationId: reservation.id,
+      status: reservation.status,
+      playerName:
+        `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim() ||
+        reservation.email ||
+        "Host",
+      resourceName: resources.join(", "),
+      timeRange: daySlots.length === 1 ? timeStart : `${timeStart} - ${timeEnd}`,
+      slotCount: daySlots.length,
+      price: totalPrice,
+    });
   }
 
-  return rows.sort((a, b) => String(a.timeStart).localeCompare(String(b.timeStart)));
+  return rows.sort((a, b) => String(a.timeRange).localeCompare(String(b.timeRange)));
 }
 
 function getInitials(user) {
@@ -857,7 +938,7 @@ function ReservationPage() {
                               }`}
                               onClick={() => toggleSlot(resource, slot)}
                             >
-                              {slot.available ? slot.price : "x"}
+                              {slot.available ? `${slot.price} Kč` : "x"}
                             </td>
                           );
                         })}
@@ -1176,6 +1257,11 @@ function ReservationPage() {
 
         {status && <p className="status ok">{status}</p>}
         {error && <p className="status error">{error}</p>}
+
+        <footer className="widgetFooter">
+          <img src="/logo-lura.png" alt="LuRa IT" />
+          <span>Vyvinuto s <span className="heart">❤</span> od <a href="https://lura-it.eu/" target="_blank" rel="noreferrer">LuRa IT Develop</a>. © {new Date().getFullYear()}</span>
+        </footer>
       </section>
     </main>
   );
@@ -1257,6 +1343,18 @@ function AdminDashboardPage() {
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState("");
   const [pendingReservationsCount, setPendingReservationsCount] = useState(0);
+  const [emailLogs, setEmailLogs] = useState([]);
+  const [emailLogsLoading, setEmailLogsLoading] = useState(false);
+  const [emailTemplates, setEmailTemplates] = useState({});
+  const [emailTemplatesLoading, setEmailTemplatesLoading] = useState(false);
+  const [editingTemplateType, setEditingTemplateType] = useState(null);
+  const [templateForm, setTemplateForm] = useState({ subject: "", bodyHtml: "" });
+  const [templateSaving, setTemplateSaving] = useState(false);
+  const editorRef = useRef(null);
+  const [showRevenueChart, setShowRevenueChart] = useState(false);
+  const [revenueChartDays, setRevenueChartDays] = useState(14);
+  const [revenueDateFrom, setRevenueDateFrom] = useState("");
+  const [revenueDateTo, setRevenueDateTo] = useState("");
 
   const [companies, setCompanies] = useState([]);
   const [companiesLoading, setCompaniesLoading] = useState(false);
@@ -1274,6 +1372,7 @@ function AdminDashboardPage() {
     firstName: "",
     lastName: "",
     phone: "",
+    notifyEmails: true,
   });
   const [editingUser, setEditingUser] = useState(null);
   const [adminCategories, setAdminCategories] = useState([]);
@@ -1288,6 +1387,8 @@ function AdminDashboardPage() {
   });
   const [editingCategory, setEditingCategory] = useState(null);
   const [showCreateCategoryForm, setShowCreateCategoryForm] = useState(false);
+  const [showCreateCompanyForm, setShowCreateCompanyForm] = useState(false);
+  const [showCreateUserForm, setShowCreateUserForm] = useState(false);
   const [resourceForm, setResourceForm] = useState({
     categoryId: "",
     name: "",
@@ -1326,6 +1427,7 @@ function AdminDashboardPage() {
     lastName: "",
     phone: "",
   });
+  const [showCreateStaffForm, setShowCreateStaffForm] = useState(false);
   const [editingStaff, setEditingStaff] = useState(null);
 
   const normalizedAdminRole = String(adminUser?.role || "").trim().toLowerCase();
@@ -1342,6 +1444,7 @@ function AdminDashboardPage() {
         },
         { id: "sources", label: "Zdroje a Stoly", Icon: Package },
         { id: "pricing", label: "Ceníky a Okna", Icon: DollarSign },
+        { id: "emails", label: "Email logy", Icon: TrendingUp },
         { id: "settings", label: "Nastavení", Icon: Settings },
       ];
   const selectedCompany = useMemo(
@@ -1380,21 +1483,16 @@ function AdminDashboardPage() {
     const uniqueTodayReservations = new Set(overviewRows.map((row) => row.reservationId)).size;
     const todayRevenue = overviewRows.reduce((sum, row) => sum + Number(row.price || 0), 0);
 
+    // Tržby z total_price (celková cena rezervace), ne po slotech
     const futureRevenue = reservations
-      .flatMap((reservation) => (reservation.slots || []).map((slot) => ({ reservation, slot })))
-      .filter(
-        ({ reservation, slot }) =>
-          extractDateKey(slot.date) > today && reservation.status !== "cancelled"
-      )
-      .reduce((sum, item) => sum + Number(item.slot.price || 0), 0);
+      .filter((r) => r.status !== "cancelled")
+      .filter((r) => (r.slots || []).some((s) => extractDateKey(s.date) > today))
+      .reduce((sum, r) => sum + Number(r.total_price || 0), 0);
 
     const pastRevenue = reservations
-      .flatMap((reservation) => (reservation.slots || []).map((slot) => ({ reservation, slot })))
-      .filter(
-        ({ reservation, slot }) =>
-          extractDateKey(slot.date) < today && reservation.status !== "cancelled"
-      )
-      .reduce((sum, item) => sum + Number(item.slot.price || 0), 0);
+      .filter((r) => r.status !== "cancelled")
+      .filter((r) => (r.slots || []).every((s) => extractDateKey(s.date) < today) && (r.slots || []).length > 0)
+      .reduce((sum, r) => sum + Number(r.total_price || 0), 0);
 
     const newPlayers = isSuperAdmin
       ? (companies.flatMap((company) => company.users || []) || []).filter(
@@ -1436,6 +1534,41 @@ function AdminDashboardPage() {
     ];
   }, [companies, isSuperAdmin, overviewRows, reservations]);
 
+  const revenueChartData = useMemo(() => {
+    const todayDate = new Date(today);
+    const map = {};
+
+    if (revenueDateFrom && revenueDateTo) {
+      let current = new Date(revenueDateFrom);
+      const end = new Date(revenueDateTo);
+      while (current <= end) {
+        const key = extractDateKey(current);
+        map[key] = 0;
+        current.setDate(current.getDate() + 1);
+      }
+    } else {
+      const days = revenueChartDays;
+      for (let i = 0; i < days; i++) {
+        const d = new Date(todayDate);
+        d.setDate(d.getDate() - i - 1);
+        const key = extractDateKey(d);
+        map[key] = 0;
+      }
+    }
+
+    for (const r of reservations) {
+      if (r.status === "cancelled") continue;
+      for (const s of r.slots || []) {
+        const dk = extractDateKey(s.date);
+        if (dk in map) map[dk] += Number(s.price || 0);
+      }
+    }
+
+    const sortedEntries = Object.entries(map).sort(([a], [b]) => a.localeCompare(b));
+    const maxVal = Math.max(1, ...Object.values(map));
+    return { entries: sortedEntries, maxVal };
+  }, [reservations, revenueChartDays, revenueDateFrom, revenueDateTo, today]);
+
   async function loadReservations() {
     if (!api.getAdminToken()) {
       window.location.href = "/admin";
@@ -1467,7 +1600,6 @@ function AdminDashboardPage() {
     if (!api.getAdminToken() || isSuperAdmin) {
       return;
     }
-
     try {
       const data = await api.getAdminPendingReservationsCount();
       setPendingReservationsCount(Math.max(Number(data?.pendingCount) || 0, 0));
@@ -1478,6 +1610,65 @@ function AdminDashboardPage() {
       }
     }
   }
+
+  async function loadEmailLogs() {
+    if (!api.getAdminToken() || isSuperAdmin) return;
+    setEmailLogsLoading(true);
+    try {
+      const data = await api.getEmailLogs();
+      setEmailLogs(data);
+    } catch (err) { /* silent */ }
+    finally { setEmailLogsLoading(false); }
+  }
+
+  async function loadEmailTemplates() {
+    if (!api.getAdminToken() || isSuperAdmin) return;
+    setEmailTemplatesLoading(true);
+    try {
+      const data = await api.getEmailTemplates();
+      setEmailTemplates(data || {});
+    } catch (err) { /* silent */ }
+    finally { setEmailTemplatesLoading(false); }
+  }
+
+  function startEditTemplate(type) {
+    const tpl = emailTemplates[type];
+    const rawHtml = tpl?.bodyHtml || defaultTemplateBody(type);
+    setEditingTemplateType(type);
+    setTemplateForm({
+      subject: tpl?.subject || defaultTemplateSubject(type),
+      bodyHtml: extractBodyHtml(rawHtml),
+    });
+  }
+
+  async function saveTemplate() {
+    if (!editingTemplateType) return;
+    setTemplateSaving(true);
+    try {
+      const fullHtml = wrapFullHtml(templateForm.bodyHtml);
+      const saved = await api.saveEmailTemplate(editingTemplateType, templateForm.subject, fullHtml);
+      setEmailTemplates((prev) => ({ ...prev, [editingTemplateType]: saved }));
+      setEditingTemplateType(null);
+      setNotice("Šablona uložena.");
+    } catch (err) {
+      setNotice("Chyba: " + (err.message || "ukládání"));
+    } finally {
+      setTemplateSaving(false);
+    }
+  }
+
+  function handleEditorChange() {
+    if (editorRef.current) {
+      setTemplateForm((f) => ({ ...f, bodyHtml: editorRef.current.innerHTML }));
+    }
+  }
+
+  useEffect(() => {
+    if (editingTemplateType && editorRef.current) {
+      editorRef.current.innerHTML = templateForm.bodyHtml;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingTemplateType]);
 
   async function loadAdminCategoryDetails(categoryId) {
     if (!categoryId || isSuperAdmin) {
@@ -1595,8 +1786,8 @@ function AdminDashboardPage() {
     }
   }
 
-  async function loadCompanies(preferredCompanyId = "") {
-    if (!isSuperAdmin) {
+  async function loadCompanies(preferredCompanyId = "", _forceSuperAdmin = false) {
+    if (!isSuperAdmin && !_forceSuperAdmin) {
       return [];
     }
 
@@ -1669,7 +1860,7 @@ function AdminDashboardPage() {
 
         if (role === "superadmin") {
           setTab("superadmin");
-          await loadCompanies();
+          await loadCompanies("", true);
           return;
         }
 
@@ -1758,6 +1949,13 @@ function AdminDashboardPage() {
       loadAdminCategoryDetails(selectedCategoryId);
     }
   }, [isSuperAdmin, selectedCategoryId]);
+
+  useEffect(() => {
+    if (!isSuperAdmin && tab === "emails") {
+      loadEmailTemplates();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, isSuperAdmin]);
 
   useEffect(() => {
     if (isSuperAdmin) {
@@ -1861,6 +2059,7 @@ function AdminDashboardPage() {
       firstName: user.firstName,
       lastName: user.lastName,
       phone: user.phone || "",
+      notifyEmails: user.notifyEmails !== false,
     });
     setTab("superadmin");
     setSelectedCompanyId(String(user.companyId));
@@ -1873,13 +2072,14 @@ function AdminDashboardPage() {
 
     try {
       const created = await api.createUser({
-        companyId: Number(userForm.companyId),
-        role: userForm.role,
+        companyId: Number(selectedCompanyId),
+        role: "admin",
         email: userForm.email,
         password: userForm.password,
         firstName: userForm.firstName,
         lastName: userForm.lastName,
         phone: userForm.phone,
+        notifyEmails: userForm.notifyEmails,
       });
 
       setUserForm((current) => ({
@@ -1889,6 +2089,7 @@ function AdminDashboardPage() {
         firstName: "",
         lastName: "",
         phone: "",
+        notifyEmails: true,
       }));
       setSelectedCompanyId(String(created.companyId));
       setTab("superadmin");
@@ -1917,6 +2118,7 @@ function AdminDashboardPage() {
         firstName: editingUser.firstName,
         lastName: editingUser.lastName,
         phone: editingUser.phone,
+        notifyEmails: editingUser.notifyEmails,
       });
 
       setEditingUser(null);
@@ -2258,6 +2460,7 @@ function AdminDashboardPage() {
         lastName: "",
         phone: "",
       });
+      setShowCreateStaffForm(false);
       setNotice("Admin zaměstnanec vytvořen.");
       await loadAdminSettingsPanel();
     } catch (err) {
@@ -2268,6 +2471,7 @@ function AdminDashboardPage() {
   }
 
   function startEditStaff(user) {
+    setShowCreateStaffForm(false);
     setEditingStaff({
       id: user.id,
       email: user.email,
@@ -2413,10 +2617,15 @@ function AdminDashboardPage() {
               )}
 
                <section className="statGrid">
-                 {overviewStats.map((stat) => {
+                 {overviewStats.map((stat, idx) => {
                    const IconComponent = stat.icon;
+                   const isPastRevenue = stat.label.includes("Uskutečněná");
                    return (
-                     <article key={stat.label} className="statCard">
+                     <article
+                       key={stat.label}
+                       className={`statCard ${isPastRevenue ? "statCard--clickable" : ""}`}
+                       onClick={() => { if (isPastRevenue) setShowRevenueChart("past"); }}
+                     >
                        <div className="statCardTop">
                          <div className="statLabel">
                            {String(stat.label).split("\n").map((line) => (
@@ -2462,8 +2671,8 @@ function AdminDashboardPage() {
                         </tr>
                       ) : (
                         overviewRows.map((row) => (
-                          <tr key={`${row.reservationId}_${row.timeStart}_${row.resourceName}`}>
-                            <td>{row.timeStart.slice(0, 5)}</td>
+                          <tr key={`${row.reservationId}_${row.resourceName}`}>
+                            <td>{row.timeRange}</td>
                             <td>{row.playerName}</td>
                             <td>{row.resourceName}</td>
                             <td>{formatCurrencyCZK(row.price)}</td>
@@ -2521,8 +2730,8 @@ function AdminDashboardPage() {
                         </tr>
                       ) : (
                         tomorrowOverviewRows.map((row) => (
-                          <tr key={`tomorrow_${row.reservationId}_${row.timeStart}_${row.resourceName}`}>
-                            <td>{row.timeStart.slice(0, 5)}</td>
+                          <tr key={`tomorrow_${row.reservationId}_${row.resourceName}`}>
+                            <td>{row.timeRange}</td>
                             <td>{row.playerName}</td>
                             <td>{row.resourceName}</td>
                             <td>{formatCurrencyCZK(row.price)}</td>
@@ -2588,9 +2797,10 @@ function AdminDashboardPage() {
               <div className="adminList">
                 {reservations.map((reservation) => {
                   const termLabel = formatReservationTerm(reservation.slots || []);
+                  const isPending = reservation.status === "pending";
 
                   return (
-                  <article key={reservation.id} className="adminItem adminItem--tableLike">
+                  <article key={reservation.id} className={`adminItem adminItem--tableLike ${isPending ? 'adminItem--pending' : ''}`}>
                     <div className="adminItemTop">
                       <strong>#{reservation.id}</strong>
                       <span className={`badge badge--${reservation.status}`}>{reservation.status}</span>
@@ -2638,349 +2848,237 @@ function AdminDashboardPage() {
             <>
               <section className="dashboardCard">
                 <div className="dashboardCardHeader">
-                  <h2>Company</h2>
-                  <span className="muted">Správa firem a jejich adminů</span>
+                  <div>
+                    <h2>Přehled společností</h2>
+                    <span className="muted">{companies.length} {companies.length === 1 ? "společnost" : companies.length < 5 ? "společnosti" : "společností"}</span>
+                  </div>
+                  <button className="primaryBtn" type="button"
+                    onClick={() => setShowCreateCompanyForm(c => !c)}>
+                    {showCreateCompanyForm ? "Zrušit" : "+ Nová company"}
+                  </button>
                 </div>
 
-                <form className="formGrid" onSubmit={handleCreateCompany}>
-                  <label>
-                    Název company
-                    <input
-                      className="field"
-                      value={companyForm.name}
-                      onChange={(event) => setCompanyForm((current) => ({ ...current, name: event.target.value }))}
-                      required
-                    />
-                  </label>
+                {companiesError && <p className="status error">{companiesError}</p>}
 
-                  <label>
-                    Timezone
-                    <input
-                      className="field"
-                      value={companyForm.timezone}
-                      onChange={(event) => setCompanyForm((current) => ({ ...current, timezone: event.target.value }))}
-                    />
-                  </label>
-
-                  <button className="primaryBtn" type="submit" disabled={companiesLoading}>
-                    {companiesLoading ? "Ukládám..." : "Vytvořit company"}
-                  </button>
-                </form>
+                {showCreateCompanyForm && (
+                  <form className="formGrid dashboardSubForm" onSubmit={handleCreateCompany}>
+                    <label>Název company
+                      <input className="field" value={companyForm.name}
+                        onChange={e => setCompanyForm(c => ({ ...c, name: e.target.value }))} required />
+                    </label>
+                    <label>Timezone
+                      <input className="field" value={companyForm.timezone}
+                        onChange={e => setCompanyForm(c => ({ ...c, timezone: e.target.value }))} />
+                    </label>
+                    <div style={{ alignSelf: "end" }}>
+                      <button className="primaryBtn" type="submit" disabled={companiesLoading}>
+                        {companiesLoading ? "Ukládám..." : "Vytvořit"}
+                      </button>
+                    </div>
+                  </form>
+                )}
 
                 {editingCompany && (
                   <form className="formGrid dashboardSubForm" onSubmit={handleSaveCompany}>
-                    <label>
-                      Upravit company
-                      <input
-                        className="field"
-                        value={editingCompany.name}
-                        onChange={(event) => setEditingCompany((current) => ({ ...current, name: event.target.value }))}
-                        required
-                      />
+                    <label>Upravit #{editingCompany.id}
+                      <input className="field" value={editingCompany.name}
+                        onChange={e => setEditingCompany(c => ({ ...c, name: e.target.value }))} required />
                     </label>
-
-                    <label>
-                      Timezone
-                      <input
-                        className="field"
-                        value={editingCompany.timezone}
-                        onChange={(event) => setEditingCompany((current) => ({ ...current, timezone: event.target.value }))}
-                      />
+                    <label>Timezone
+                      <input className="field" value={editingCompany.timezone}
+                        onChange={e => setEditingCompany(c => ({ ...c, timezone: e.target.value }))} />
                     </label>
-
-                    <div className="actionsRight">
-                      <button className="primaryBtn" type="submit">
-                        Uložit company
-                      </button>
-                      <button className="ghostBtn" type="button" onClick={() => setEditingCompany(null)}>
-                        Zrušit
-                      </button>
+                    <div style={{ alignSelf: "end", display: "flex", gap: 8 }}>
+                      <button className="primaryBtn" type="submit">Uložit</button>
+                      <button className="ghostBtn" type="button" onClick={() => setEditingCompany(null)}>Zrušit</button>
                     </div>
                   </form>
                 )}
 
-                <div className="adminList">
-                  {companies.map((company) => (
-                    <article key={company.id} className="adminItem">
-                      <div className="adminItemTop">
-                        <strong>#{company.id} {company.name}</strong>
-                        <span>{company.timezone}</span>
-                        <span>{company.userCount} uzivatelu</span>
-                      </div>
+                {companies.length === 0 && !showCreateCompanyForm && (
+                  <p className="saEmpty">Zatím žádné společnosti. Klikněte na „+ Nová company".</p>
+                )}
 
-                      <div className="slotRows">
-                        {(company.users || []).map((user) => (
-                          <span key={user.id} className="slotRow">
-                            {user.firstName} {user.lastName} ({user.role}) - {user.email}
-                          </span>
-                        ))}
-                      </div>
+                <div className="saGrid" style={{ marginTop: companies.length > 0 ? 8 : 0 }}>
+                  {companies.map((company) => {
+                    const admins = (company.users || []).filter(u => u.role === 'admin');
+                    return (
+                      <div key={company.id} className="saCard">
+                        <div className="saCardHeader">
+                          <h3 className="saCardTitle">
+                            {company.name}
+                            <span>#{company.id} · {company.timezone} · {company.userCount} uživatelů</span>
+                          </h3>
+                        </div>
 
-                      <div className="slotRows">
-                        <span className="slotRow">Embed URL: {`${window.location.origin}/?companyId=${company.id}`}</span>
-                        <textarea
-                          className="field"
-                          readOnly
-                          value={buildCompanyEmbedTag(company.id)}
-                          rows={3}
-                          style={{ width: "100%", resize: "vertical" }}
-                        />
-                      </div>
+                        <hr className="saDivider" />
 
-                      <div className="actionsRight">
-                        <button className="ghostBtn" type="button" onClick={() => startEditCompany(company)}>
-                          Upravit company
-                        </button>
-                        <button
-                          className="primaryBtn"
-                          type="button"
-                          onClick={() => {
-                            setSelectedCompanyId(String(company.id));
-                            setTab("superadmin");
-                          }}
-                        >
-                          Spravovat uzivatele
-                        </button>
-                        <button
-                          className="ghostBtn"
-                          type="button"
-                          onClick={() => handleCopyCompanyEmbedTag(company.id)}
-                        >
-                          {copiedEmbedCompanyId === String(company.id) ? "Iframe zkopirovan" : "Kopirovat iframe"}
-                        </button>
+                        <div className="saAdmins">
+                          {admins.length === 0 ? (
+                            <span className="saEmpty">Žádní admini</span>
+                          ) : (
+                            admins.map(a => (
+                              <div key={a.id} className="saAdminRow">
+                                <span className="saAdminName">{a.firstName} {a.lastName}</span>
+                                <span className="saAdminEmail">{a.email}</span>
+                              </div>
+                            ))
+                          )}
+                        </div>
+
+                        <div className="saEmbedBox">
+                          <code>{window.location.origin}/?companyId={company.id}</code>
+                          <textarea readOnly value={buildCompanyEmbedTag(company.id)} rows={2} />
+                        </div>
+
+                        <div className="saActions">
+                          <button className="saBtn" type="button" onClick={() => startEditCompany(company)}>
+                            Upravit
+                          </button>
+                          <button className="saBtn saBtn--primary" type="button"
+                            onClick={() => {
+                              setSelectedCompanyId(String(company.id));
+                              document.getElementById("usersSection")?.scrollIntoView({ behavior: "smooth" });
+                            }}>
+                            Spravovat adminy
+                          </button>
+                          <button className="saBtn saBtn--ghost" type="button"
+                            onClick={() => handleCopyCompanyEmbedTag(company.id)}>
+                            {copiedEmbedCompanyId === String(company.id) ? "✓ Zkopírováno" : "Kopírovat iframe"}
+                          </button>
+                        </div>
                       </div>
-                    </article>
-                  ))}
+                    );
+                  })}
                 </div>
               </section>
 
-              <section className="dashboardCard">
-                <div className="dashboardCardHeader">
-                  <h2>Uzivatele</h2>
-                  <div className="actionsRight">
-                    <select
-                      className="field"
-                      value={selectedCompanyId}
-                      onChange={(event) => setSelectedCompanyId(event.target.value)}
-                      style={{ minWidth: 220 }}
-                    >
-                      <option value="">Vyber company</option>
-                      {companies.map((company) => (
-                        <option key={company.id} value={company.id}>
-                          #{company.id} {company.name}
-                        </option>
+              <section className="saDetailPanel" id="usersSection">
+                <div className="saDetailHeader">
+                  <div>
+                    <h2>{selectedCompany ? selectedCompany.name : "Správa adminů"}</h2>
+                    {!selectedCompany && <span className="muted" style={{ display: "block", marginTop: 4 }}>Vyberte company výše pro správu jejích administrátorů</span>}
+                  </div>
+                  {selectedCompany && (
+                    <select className="field" value={selectedCompanyId}
+                      onChange={e => setSelectedCompanyId(e.target.value)}
+                      style={{ minWidth: 240 }}>
+                      {companies.map(c => (
+                        <option key={c.id} value={c.id}>#{c.id} {c.name}</option>
                       ))}
                     </select>
-                    <button className="ghostBtn" type="button" onClick={() => loadCompanies(selectedCompanyId)}>
-                      Obnovit
-                    </button>
-                  </div>
+                  )}
                 </div>
 
-                <form className="formGrid" onSubmit={handleCreateUser}>
-                  <label>
-                    Company
-                    <select
-                      className="field"
-                      value={userForm.companyId}
-                      onChange={(event) => setUserForm((current) => ({ ...current, companyId: event.target.value }))}
-                      required
-                    >
-                      <option value="">Vyber company</option>
-                      {companies.map((company) => (
-                        <option key={company.id} value={company.id}>
-                          #{company.id} {company.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label>
-                    Role
-                    <select
-                      className="field"
-                      value={userForm.role}
-                      onChange={(event) => setUserForm((current) => ({ ...current, role: event.target.value }))}
-                    >
-                      <option value="admin">admin</option>
-                      <option value="coach">coach</option>
-                      <option value="player">player</option>
-                    </select>
-                  </label>
-
-                  <label>
-                    E-mail
-                    <input
-                      className="field"
-                      type="email"
-                      value={userForm.email}
-                      onChange={(event) => setUserForm((current) => ({ ...current, email: event.target.value }))}
-                      required
-                    />
-                  </label>
-
-                  <label>
-                    Heslo
-                    <input
-                      className="field"
-                      type="password"
-                      value={userForm.password}
-                      onChange={(event) => setUserForm((current) => ({ ...current, password: event.target.value }))}
-                      required
-                    />
-                  </label>
-
-                  <label>
-                    Jméno
-                    <input
-                      className="field"
-                      value={userForm.firstName}
-                      onChange={(event) => setUserForm((current) => ({ ...current, firstName: event.target.value }))}
-                      required
-                    />
-                  </label>
-
-                  <label>
-                    Příjmení
-                    <input
-                      className="field"
-                      value={userForm.lastName}
-                      onChange={(event) => setUserForm((current) => ({ ...current, lastName: event.target.value }))}
-                      required
-                    />
-                  </label>
-
-                  <label className="full">
-                    Telefon
-                    <input
-                      className="field"
-                      value={userForm.phone}
-                      onChange={(event) => setUserForm((current) => ({ ...current, phone: event.target.value }))}
-                    />
-                  </label>
-
-                  <button className="primaryBtn" type="submit">Vytvořit uživatele</button>
-                </form>
-
-                {editingUser && (
-                  <form className="formGrid dashboardSubForm" onSubmit={handleSaveUser}>
-                    <label>
-                      Company
-                      <select
-                        className="field"
-                        value={editingUser.companyId}
-                        onChange={(event) => setEditingUser((current) => ({ ...current, companyId: event.target.value }))}
-                        required
-                      >
-                        {companies.map((company) => (
-                          <option key={company.id} value={company.id}>
-                            #{company.id} {company.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <label>
-                      Role
-                      <select
-                        className="field"
-                        value={editingUser.role}
-                        onChange={(event) => setEditingUser((current) => ({ ...current, role: event.target.value }))}
-                      >
-                        <option value="admin">admin</option>
-                        <option value="coach">coach</option>
-                        <option value="player">player</option>
-                      </select>
-                    </label>
-
-                    <label>
-                      E-mail
-                      <input
-                        className="field"
-                        type="email"
-                        value={editingUser.email}
-                        onChange={(event) => setEditingUser((current) => ({ ...current, email: event.target.value }))}
-                        required
-                      />
-                    </label>
-
-                    <label>
-                      Nové heslo
-                      <input
-                        className="field"
-                        type="password"
-                        value={editingUser.password}
-                        onChange={(event) => setEditingUser((current) => ({ ...current, password: event.target.value }))}
-                        placeholder="Ponechte prazdne pro beze zmeny"
-                      />
-                    </label>
-
-                    <label>
-                      Jméno
-                      <input
-                        className="field"
-                        value={editingUser.firstName}
-                        onChange={(event) => setEditingUser((current) => ({ ...current, firstName: event.target.value }))}
-                        required
-                      />
-                    </label>
-
-                    <label>
-                      Příjmení
-                      <input
-                        className="field"
-                        value={editingUser.lastName}
-                        onChange={(event) => setEditingUser((current) => ({ ...current, lastName: event.target.value }))}
-                        required
-                      />
-                    </label>
-
-                    <label className="full">
-                      Telefon
-                      <input
-                        className="field"
-                        value={editingUser.phone}
-                        onChange={(event) => setEditingUser((current) => ({ ...current, phone: event.target.value }))}
-                      />
-                    </label>
-
-                    <div className="actionsRight">
-                      <button className="primaryBtn" type="submit">Uložit uživatele</button>
-                      <button className="ghostBtn" type="button" onClick={() => setEditingUser(null)}>
-                        Zrušit
-                      </button>
-                    </div>
-                  </form>
-                )}
-
-                {selectedCompany ? (
-                  <div className="adminList">
-                    <div className="dashboardCardHeader dashboardCardHeader--inline">
-                      <h3>Uzivatele v company</h3>
-                      <span className="muted">{selectedCompany.name}</span>
-                    </div>
-                    {selectedUsers.length === 0 && <p className="muted">V téhle company nejsou žádní uživatelé.</p>}
-                    {selectedUsers.map((user) => (
-                      <article key={user.id} className="adminItem">
-                        <div className="adminItemTop">
-                          <strong>#{user.id}</strong>
-                          <span>{user.firstName} {user.lastName}</span>
-                          <span>{user.role}</span>
-                          <span>{user.email}</span>
-                        </div>
-                        <p className="muted">
-                          Telefon: {user.phone || "-"} · Kredit: {user.currentCredit}
-                        </p>
-                        <div className="actionsRight">
-                          <button className="ghostBtn" type="button" onClick={() => startEditUser(user)}>
-                            Upravit uživatele
-                          </button>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
+                {!selectedCompany ? (
+                  <p className="saEmpty">↑ Vyberte company z přehledu výše.</p>
                 ) : (
-                  <p className="muted">Vyber company pro zobrazení uživatelů.</p>
+                  <div className="saDetailBody">
+                    <div className="saSection">
+                      <h3>Embed / Iframe kód</h3>
+                      <div className="saEmbedBox">
+                        <code>{window.location.origin}/?companyId={selectedCompany.id}</code>
+                        <textarea readOnly value={buildCompanyEmbedTag(selectedCompany.id)} rows={2} />
+                      </div>
+                      <div className="saActions" style={{ marginTop: 10 }}>
+                        <a className="saBtn saBtn--ghost" href={`${window.location.origin}/?companyId=${selectedCompany.id}`}
+                          target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none" }}>
+                          Otevřít náhled →
+                        </a>
+                        <button className="saBtn saBtn--primary" type="button"
+                          onClick={() => handleCopyCompanyEmbedTag(selectedCompany.id)}>
+                          {copiedEmbedCompanyId === String(selectedCompany.id) ? "✓ Zkopírováno!" : "Kopírovat iframe"}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="saSection">
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                        <h3 style={{ margin: 0 }}>Admini</h3>
+                        <button className="saBtn saBtn--primary" type="button"
+                          onClick={() => setShowCreateUserForm(c => !c)}>
+                          {showCreateUserForm ? "Zrušit" : "+ Nový admin"}
+                        </button>
+                      </div>
+
+                      {showCreateUserForm && (
+                        <form className="formGrid dashboardSubForm" onSubmit={handleCreateUser} style={{ marginBottom: 16 }}>
+                          <label>E-mail
+                            <input className="field" type="email" value={userForm.email}
+                              onChange={e => setUserForm(c => ({ ...c, email: e.target.value }))} required />
+                          </label>
+                          <label>Heslo
+                            <input className="field" type="password" value={userForm.password}
+                              onChange={e => setUserForm(c => ({ ...c, password: e.target.value }))} required />
+                          </label>
+                          <label>Jméno
+                            <input className="field" value={userForm.firstName}
+                              onChange={e => setUserForm(c => ({ ...c, firstName: e.target.value }))} required />
+                          </label>
+                          <label>Příjmení
+                            <input className="field" value={userForm.lastName}
+                              onChange={e => setUserForm(c => ({ ...c, lastName: e.target.value }))} required />
+                          </label>
+                          <label style={{ flexDirection: "row", alignItems: "center", gap: "8px", gridColumn: "1 / -1" }}>
+                            <input type="checkbox" checked={userForm.notifyEmails}
+                              onChange={e => setUserForm(c => ({ ...c, notifyEmails: e.target.checked }))} />
+                            Odesílat emailové notifikace o rezervacích
+                          </label>
+                          <div style={{ alignSelf: "end" }}>
+                            <button className="primaryBtn" type="submit">Vytvořit admina</button>
+                          </div>
+                        </form>
+                      )}
+
+                      {editingUser && (
+                        <form className="formGrid dashboardSubForm" onSubmit={handleSaveUser} style={{ marginBottom: 16 }}>
+                          <label>E-mail
+                            <input className="field" type="email" value={editingUser.email}
+                              onChange={e => setEditingUser(c => ({ ...c, email: e.target.value }))} required />
+                          </label>
+                          <label>Heslo <span className="muted">(nechte prázdné)</span>
+                            <input className="field" type="password" value={editingUser.password}
+                              onChange={e => setEditingUser(c => ({ ...c, password: e.target.value }))} placeholder="Beze změny" />
+                          </label>
+                          <label>Jméno
+                            <input className="field" value={editingUser.firstName}
+                              onChange={e => setEditingUser(c => ({ ...c, firstName: e.target.value }))} required />
+                          </label>
+                          <label>Příjmení
+                            <input className="field" value={editingUser.lastName}
+                              onChange={e => setEditingUser(c => ({ ...c, lastName: e.target.value }))} required />
+                          </label>
+                          <label style={{ flexDirection: "row", alignItems: "center", gap: "8px", gridColumn: "1 / -1" }}>
+                            <input type="checkbox" checked={editingUser.notifyEmails}
+                              onChange={e => setEditingUser(c => ({ ...c, notifyEmails: e.target.checked }))} />
+                            Odesílat emailové notifikace o rezervacích
+                          </label>
+                          <div style={{ alignSelf: "end", display: "flex", gap: 8 }}>
+                            <button className="primaryBtn" type="submit">Uložit</button>
+                            <button className="ghostBtn" type="button" onClick={() => setEditingUser(null)}>Zrušit</button>
+                          </div>
+                        </form>
+                      )}
+
+                      <div className="saAdmins">
+                        {selectedUsers.filter(u => u.role === 'admin').length === 0 && !showCreateUserForm && (
+                          <span className="saEmpty">Žádní admini. Vytvořte prvního tlačítkem výše.</span>
+                        )}
+                        {selectedUsers.filter(u => u.role === 'admin').map(user => (
+                          <div key={user.id} className="saAdminRow" style={{ padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
+                            <span className="saAdminName">{user.firstName} {user.lastName}</span>
+                            <span className="saAdminEmail">{user.email}</span>
+                            <span style={{ fontSize: "11px", color: user.notifyEmails !== false ? "var(--brand)" : "var(--text-soft)", marginLeft: "8px" }}>
+                              {user.notifyEmails !== false ? "📧 notifikace" : "🔕 bez notifikací"}
+                            </span>
+                            <button className="saBtn saBtn--ghost" type="button"
+                              style={{ marginLeft: "auto" }}
+                              onClick={() => startEditUser(user)}>Upravit</button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
                 )}
               </section>
             </>
@@ -3719,6 +3817,198 @@ function AdminDashboardPage() {
             </>
           )}
 
+
+          {tab === "emails" && !isSuperAdmin && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+              {/* Šablony emailů */}
+              <section className="dashboardCard">
+                <div className="dashboardCardHeader">
+                  <h2>Šablony emailů</h2>
+                  <button className="ghostBtn" type="button" onClick={loadEmailTemplates} disabled={emailTemplatesLoading}>
+                    {emailTemplatesLoading ? "Načítám..." : "Obnovit"}
+                  </button>
+                </div>
+
+                {editingTemplateType ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                      <button className="ghostBtn" type="button" onClick={() => setEditingTemplateType(null)}>
+                        ← Zpět na přehled
+                      </button>
+                      <h3 style={{ margin: 0 }}>
+                        {editingTemplateType === "cancellation" ? "Storno rezervace" : editingTemplateType === "confirmation" ? "Potvrzení rezervace" : "Shrnutí rezervace"}
+                      </h3>
+                    </div>
+
+                    <label>
+                      Předmět
+                      <input
+                        className="field"
+                        value={templateForm.subject}
+                        onChange={(e) => setTemplateForm((f) => ({ ...f, subject: e.target.value }))}
+                      />
+                    </label>
+
+                    <div>
+                      {/* Toolbar */}
+                      <div className="richEditorToolbar">
+                        <button type="button" title="Tučné" style={{ fontWeight: "bold" }} onClick={() => document.execCommand("bold")}>B</button>
+                        <button type="button" title="Kurzíva" style={{ fontStyle: "italic" }} onClick={() => document.execCommand("italic")}><em>I</em></button>
+                        <button type="button" title="Podtržené" style={{ textDecoration: "underline" }} onClick={() => document.execCommand("underline")}><u>U</u></button>
+                        <span style={{ width: "1px", height: "20px", background: "var(--line)", margin: "0 4px" }} />
+                        <button type="button" title="Větší písmo" style={{ fontSize: "11px" }} onClick={() => document.execCommand("fontSize", false, "5")}>A+</button>
+                        <button type="button" title="Menší písmo" style={{ fontSize: "11px" }} onClick={() => document.execCommand("fontSize", false, "2")}>A-</button>
+                        <span style={{ width: "1px", height: "20px", background: "var(--line)", margin: "0 4px" }} />
+                        <input type="color" title="Barva textu" style={{ width: "24px", height: "24px", border: "none", cursor: "pointer", padding: 0, background: "transparent" }}
+                          onChange={(e) => { document.execCommand("foreColor", false, e.target.value); }} />
+                        <span style={{ width: "1px", height: "20px", background: "var(--line)", margin: "0 4px" }} />
+                        <button type="button" title="Odrážkový seznam" onClick={() => document.execCommand("insertUnorderedList")}>•</button>
+                        <button type="button" title="Číslovaný seznam" onClick={() => document.execCommand("insertOrderedList")}>1.</button>
+                        <span style={{ width: "1px", height: "20px", background: "var(--line)", margin: "0 4px" }} />
+                        <span className="muted" style={{ fontSize: "11px", marginRight: "2px" }}>Vložit:</span>
+                        {TEMPLATE_VARS_HELP.map((v) => (
+                          <button
+                            key={v.var}
+                            type="button"
+                            title={v.desc}
+                            style={{ fontSize: "10px", padding: "2px 6px", color: "var(--brand)", fontWeight: 600 }}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              const editor = editorRef.current;
+                              if (editor) {
+                                editor.focus();
+                                const sel = window.getSelection();
+                                const range = sel.getRangeAt(0);
+                                const span = document.createElement("span");
+                                span.contentEditable = "false";
+                                span.className = "tplVar";
+                                span.textContent = v.var;
+                                range.insertNode(span);
+                                range.collapse(false);
+                                handleEditorChange();
+                              }
+                            }}
+                          >
+                            {v.var.replace(/[{}]/g, "")}
+                          </button>
+                        ))}
+                      </div>
+
+                      {/* Editor */}
+                      <div
+                        ref={editorRef}
+                        contentEditable
+                        suppressContentEditableWarning
+                        className="richEditor"
+                        onInput={handleEditorChange}
+                        onBlur={handleEditorChange}
+                      />
+                      <p className="muted" style={{ fontSize: "11px", marginTop: "4px" }}>
+                        Pište přímo jako ve Wordu. Barevné štítky jsou proměnné — nesmažete je.
+                      </p>
+                    </div>
+
+                    <div style={{ display: "flex", gap: "10px" }}>
+                      <button
+                        className="primaryBtn"
+                        type="button"
+                        onClick={saveTemplate}
+                        disabled={templateSaving}
+                      >
+                        {templateSaving ? "Ukládám..." : "Uložit šablonu"}
+                      </button>
+                      <button
+                        className="ghostBtn"
+                        type="button"
+                        onClick={() => {
+                          const defBody = defaultTemplateBody(editingTemplateType);
+                          setTemplateForm({
+                            subject: defaultTemplateSubject(editingTemplateType),
+                            bodyHtml: defBody,
+                          });
+                          if (editorRef.current) editorRef.current.innerHTML = defBody;
+                        }}
+                      >
+                        Obnovit výchozí
+                      </button>
+                      <button className="ghostBtn" type="button" onClick={() => setEditingTemplateType(null)}>
+                        Zrušit
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="adminList">
+                    {(["customer_summary", "confirmation", "cancellation"]).map((type) => {
+                      const tpl = emailTemplates[type];
+                      const labels = { customer_summary: "Shrnutí rezervace", confirmation: "Potvrzení rezervace", cancellation: "Storno rezervace" };
+                      return (
+                        <article key={type} className="adminItem adminItem--tableLike">
+                          <div className="adminItemTop">
+                            <strong>{labels[type]}</strong>
+                            {tpl ? (
+                              <span className="badge badge--confirmed">Upraveno</span>
+                            ) : (
+                              <span className="badge">Výchozí</span>
+                            )}
+                          </div>
+                          <p className="muted">
+                            Předmět: {tpl?.subject || defaultTemplateSubject(type)}
+                          </p>
+                          {tpl?.updatedAt && (
+                            <p className="muted" style={{ fontSize: "12px" }}>
+                              Upraveno: {new Date(tpl.updatedAt).toLocaleString("cs-CZ")}
+                            </p>
+                          )}
+                          <div className="actionsRight" style={{ marginTop: "8px" }}>
+                            <button
+                              className="primaryBtn"
+                              type="button"
+                              onClick={() => startEditTemplate(type)}
+                            >
+                              Upravit
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+
+              {/* Email logy */}
+              <section className="dashboardCard">
+                <div className="dashboardCardHeader">
+                  <h2>Email logy</h2>
+                  <button className="primaryBtn" type="button" onClick={loadEmailLogs} disabled={emailLogsLoading}>
+                    {emailLogsLoading ? "Načítám..." : "Obnovit"}
+                  </button>
+                </div>
+                {emailLogs.length === 0 ? (
+                  <p className="muted">Zatím nebyly odeslány žádné emaily.</p>
+                ) : (
+                  <div className="adminList">
+                    {emailLogs.map((log) => (
+                      <article key={log.id} className="adminItem adminItem--tableLike">
+                        <div className="adminItemTop">
+                          <strong>{log.subject}</strong>
+                          <span className={`badge ${log.type === 'confirmation' ? 'badge--confirmed' : log.type === 'cancellation' ? 'badge--cancelled' : log.type === 'admin_notification' ? 'badge--pending' : ''}`}>
+                            {log.type === 'admin_notification' ? 'Admin' : log.type === 'customer_summary' ? 'Zákazník' : log.type === 'cancellation' ? 'Storno' : 'Potvrzení'}
+                          </span>
+                        </div>
+                        <p className="muted">
+                          Komu: {log.recipientName ? `${log.recipientName} ` : ''}({log.recipientEmail})
+                          {log.reservationId && ` · Rezervace #${log.reservationId}`}
+                        </p>
+                        <p className="muted" style={{ fontSize: '12px' }}>
+                          {new Date(log.sentAt).toLocaleString('cs-CZ')}
+                        </p>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
+          )}
           {tab === "settings" && !isSuperAdmin && (
             <>
               <section className="dashboardCard">
@@ -3870,6 +4160,105 @@ function AdminDashboardPage() {
 
               <section className="dashboardCard">
                 <div className="dashboardCardHeader">
+                  <h2>Notifikace adminů</h2>
+                  <button className="ghostBtn" type="button" onClick={loadAdminSettingsPanel} disabled={settingsLoading}>
+                    {settingsLoading ? "Načítám..." : "Obnovit"}
+                  </button>
+                </div>
+                <p className="muted" style={{ marginBottom: "16px" }}>
+                  Zvolte, komu mají chodit e-maily o nových rezervacích a změnách.
+                </p>
+
+                {adminStaffUsers.length === 0 ? (
+                  <p className="muted">Žádní admini k zobrazení.</p>
+                ) : (
+                  <div className="adminList" style={{ border: "1px solid var(--line)", borderRadius: "12px", overflow: "hidden" }}>
+                    {adminStaffUsers.map((user) => {
+                      const isMe = String(user.id) === String(adminUser?.id);
+                      const isNotify = user.notifyEmails !== false;
+                      
+                      return (
+                        <div 
+                          key={user.id} 
+                          className="adminItem adminItem--tableLike"
+                          style={{ 
+                            padding: "10px 14px", 
+                            display: "flex", 
+                            alignItems: "center", 
+                            gap: "12px", 
+                            borderBottom: "1px solid var(--line)",
+                            background: "var(--surface-1)"
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1 }}>
+                            <div style={{ position: "relative", display: "inline-flex" }}>
+                              <input
+                                type="checkbox"
+                                checked={isNotify}
+                                style={{ width: "18px", height: "18px", cursor: "pointer", accentColor: "var(--brand)" }}
+                                onChange={async (e) => {
+                                  const checked = e.target.checked;
+                                  setOwnCompanySettings((prev) => {
+                                    if (!prev) return prev;
+                                    return {
+                                      ...prev,
+                                      users: (prev.users || []).map((u) =>
+                                        String(u.id) === String(user.id) ? { ...u, notifyEmails: checked } : u
+                                      ),
+                                    };
+                                  });
+                                  if (isMe) setAdminUser((u) => u ? { ...u, notifyEmails: checked } : u);
+                                  try {
+                                    await api.updateUser(user.id, { notifyEmails: checked });
+                                  } catch {
+                                    setOwnCompanySettings((prev) => {
+                                      if (!prev) return prev;
+                                      return {
+                                        ...prev,
+                                        users: (prev.users || []).map((u) =>
+                                          String(u.id) === String(user.id) ? { ...u, notifyEmails: !checked } : u
+                                        ),
+                                      };
+                                    });
+                                    if (isMe) setAdminUser((u) => u ? { ...u, notifyEmails: !checked } : u);
+                                    setNotice("Chyba při ukládání.");
+                                  }
+                                }}
+                              />
+                            </div>
+                            
+                            <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                <strong style={{ color: "var(--text)", fontSize: "14px" }}>
+                                  {user.firstName} {user.lastName}
+                                </strong>
+                                {isMe && <span className="badge badge--confirmed" style={{ fontSize: "10px", padding: "1px 5px" }}>Vy</span>}
+                              </div>
+                              <span className="muted" style={{ fontSize: "12px" }}>{user.email}</span>
+                            </div>
+                          </div>
+
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <span style={{ 
+                              fontSize: "12px", 
+                              fontWeight: "600",
+                              color: isNotify ? "var(--brand)" : "var(--text-soft)"
+                            }}>
+                              {isNotify ? "Zasílat" : "Vypnuto"}
+                            </span>
+                            <span style={{ fontSize: "18px" }}>
+                              {isNotify ? "📧" : "🔕"}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+
+              <section className="dashboardCard">
+                <div className="dashboardCardHeader">
                   <h2>Pravidla rezervace</h2>
                   <button className="ghostBtn" type="button" onClick={() => loadBookingSettings()} disabled={bookingSettingsLoading}>
                     {bookingSettingsLoading ? "Načítám..." : "Obnovit"}
@@ -3906,71 +4295,93 @@ function AdminDashboardPage() {
 
               <section className="dashboardCard">
                 <div className="dashboardCardHeader">
-                  <h2>Admin zaměstnanci</h2>
-                  <span className="muted">Přidání dalších kolegů s rolí admin</span>
+                  <div>
+                    <h2>Admin zaměstnanci</h2>
+                    <span className="muted">Přidání dalších kolegů s rolí admin</span>
+                  </div>
+                  {!showCreateStaffForm && !editingStaff && (
+                    <button 
+                      className="primaryBtn" 
+                      type="button" 
+                      onClick={() => setShowCreateStaffForm(true)}
+                    >
+                      + Přidat admina
+                    </button>
+                  )}
                 </div>
 
-                <form className="formGrid" onSubmit={handleCreateStaffAdmin}>
-                  <label>
-                    E-mail
-                    <input
-                      className="field"
-                      type="email"
-                      value={staffForm.email}
-                      onChange={(event) => setStaffForm((current) => ({ ...current, email: event.target.value }))}
-                      required
-                    />
-                  </label>
+                {showCreateStaffForm && (
+                  <form className="formGrid dashboardSubForm" onSubmit={handleCreateStaffAdmin} style={{ marginBottom: 24 }}>
+                    <div className="dashboardCardHeader dashboardCardHeader--inline" style={{ gridColumn: "1 / -1", marginBottom: 8 }}>
+                      <h3 style={{ margin: 0 }}>Nový admin</h3>
+                    </div>
+                    <label>
+                      E-mail
+                      <input
+                        className="field"
+                        type="email"
+                        value={staffForm.email}
+                        onChange={(event) => setStaffForm((current) => ({ ...current, email: event.target.value }))}
+                        required
+                      />
+                    </label>
 
-                  <label>
-                    Heslo
-                    <input
-                      className="field"
-                      type="password"
-                      value={staffForm.password}
-                      onChange={(event) => setStaffForm((current) => ({ ...current, password: event.target.value }))}
-                      required
-                    />
-                  </label>
+                    <label>
+                      Heslo
+                      <input
+                        className="field"
+                        type="password"
+                        value={staffForm.password}
+                        onChange={(event) => setStaffForm((current) => ({ ...current, password: event.target.value }))}
+                        required
+                      />
+                    </label>
 
-                  <label>
-                    Jméno
-                    <input
-                      className="field"
-                      value={staffForm.firstName}
-                      onChange={(event) => setStaffForm((current) => ({ ...current, firstName: event.target.value }))}
-                      required
-                    />
-                  </label>
+                    <label>
+                      Jméno
+                      <input
+                        className="field"
+                        value={staffForm.firstName}
+                        onChange={(event) => setStaffForm((current) => ({ ...current, firstName: event.target.value }))}
+                        required
+                      />
+                    </label>
 
-                  <label>
-                    Příjmení
-                    <input
-                      className="field"
-                      value={staffForm.lastName}
-                      onChange={(event) => setStaffForm((current) => ({ ...current, lastName: event.target.value }))}
-                      required
-                    />
-                  </label>
+                    <label>
+                      Příjmení
+                      <input
+                        className="field"
+                        value={staffForm.lastName}
+                        onChange={(event) => setStaffForm((current) => ({ ...current, lastName: event.target.value }))}
+                        required
+                      />
+                    </label>
 
-                  <label className="full">
-                    Telefon
-                    <input
-                      className="field"
-                      value={staffForm.phone}
-                      onChange={(event) => setStaffForm((current) => ({ ...current, phone: event.target.value }))}
-                    />
-                  </label>
+                    <label className="full">
+                      Telefon
+                      <input
+                        className="field"
+                        value={staffForm.phone}
+                        onChange={(event) => setStaffForm((current) => ({ ...current, phone: event.target.value }))}
+                      />
+                    </label>
 
-                  <div className="actionsRight">
-                    <button className="primaryBtn" type="submit" disabled={settingsLoading || !clubForm.id}>
-                      {settingsLoading ? "Ukládám..." : "Přidat admina"}
-                    </button>
-                  </div>
-                </form>
+                    <div className="actionsRight">
+                      <button className="primaryBtn" type="submit" disabled={settingsLoading || !clubForm.id}>
+                        {settingsLoading ? "Ukládám..." : "Vytvořit admina"}
+                      </button>
+                      <button className="ghostBtn" type="button" onClick={() => setShowCreateStaffForm(false)}>
+                        Zrušit
+                      </button>
+                    </div>
+                  </form>
+                )}
 
                 {editingStaff && (
-                  <form className="formGrid dashboardSubForm" onSubmit={handleSaveStaff}>
+                  <form className="formGrid dashboardSubForm" onSubmit={handleSaveStaff} style={{ marginBottom: 24 }}>
+                    <div className="dashboardCardHeader dashboardCardHeader--inline" style={{ gridColumn: "1 / -1", marginBottom: 8 }}>
+                      <h3 style={{ margin: 0 }}>Upravit admina</h3>
+                    </div>
                     <label>
                       E-mail
                       <input
@@ -4023,31 +4434,52 @@ function AdminDashboardPage() {
                     </label>
 
                     <div className="actionsRight">
-                      <button className="primaryBtn" type="submit" disabled={settingsLoading}>Uložit admina</button>
+                      <button className="primaryBtn" type="submit" disabled={settingsLoading}>Uložit změny</button>
                       <button className="ghostBtn" type="button" onClick={() => setEditingStaff(null)}>Zrušit</button>
                     </div>
                   </form>
                 )}
 
-                <div className="adminList" style={{ marginTop: 14 }}>
+                <div className="adminList">
                   {adminStaffUsers.length === 0 ? (
-                    <p className="muted">Zatím nemáte žádné další admin zaměstnance.</p>
+                    <p className="muted" style={{ padding: "0 10px" }}>Zatím nemáte žádné další admin zaměstnance.</p>
                   ) : (
-                    adminStaffUsers.map((user) => (
-                      <article key={user.id} className="adminItem">
-                        <div className="adminItemTop">
-                          <strong>#{user.id}</strong>
-                          <span>{user.firstName} {user.lastName}</span>
-                          <span>{user.email}</span>
-                        </div>
-                        <p className="muted">Telefon: {user.phone || "-"}</p>
-                        <div className="actionsRight">
-                          <button className="ghostBtn" type="button" onClick={() => startEditStaff(user)}>
-                            Upravit admina
+                    <div style={{ border: "1px solid var(--line)", borderRadius: "12px", overflow: "hidden" }}>
+                      {adminStaffUsers.map((user) => (
+                        <div 
+                          key={user.id} 
+                          className="adminItem adminItem--tableLike"
+                          style={{ 
+                            padding: "10px 14px", 
+                            display: "flex", 
+                            alignItems: "center", 
+                            gap: "12px", 
+                            borderBottom: "1px solid var(--line)",
+                            background: "var(--surface-1)"
+                          }}
+                        >
+                          <div style={{ display: "flex", flexDirection: "column", gap: "2px", flex: 1 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                              <strong style={{ color: "var(--text)", fontSize: "14px" }}>
+                                {user.firstName} {user.lastName}
+                              </strong>
+                              <span className="muted" style={{ fontSize: "12px" }}>#{user.id}</span>
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                              <span className="muted" style={{ fontSize: "12px" }}>{user.email}</span>
+                              {user.phone && <span className="muted" style={{ fontSize: "12px" }}>• {user.phone}</span>}
+                            </div>
+                          </div>
+                          <button 
+                            className="saBtn saBtn--ghost" 
+                            type="button" 
+                            onClick={() => startEditStaff(user)}
+                          >
+                            Upravit
                           </button>
                         </div>
-                      </article>
-                    ))
+                      ))}
+                    </div>
                   )}
                 </div>
               </section>
@@ -4089,6 +4521,67 @@ function AdminDashboardPage() {
           {error && <p className="status error">{error}</p>}
           {companiesError && <p className="status error">{companiesError}</p>}
           {catalogError && <p className="status error">{catalogError}</p>}
+
+          {/* Modal: Graf tržeb */}
+          {showRevenueChart && (
+            <div className="modalOverlay" onClick={() => setShowRevenueChart(false)}>
+              <div className="modalCard" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "900px" }}>
+                <div className="modalHeader">
+                  <h3>Historie tržeb</h3>
+                  <button className="ghostBtn" type="button" onClick={() => setShowRevenueChart(false)}>✕</button>
+                </div>
+
+                <div className="modalBody">
+                  <div className="chartFilters">
+                    <div className="chartPresets">
+                      {[7, 14, 30, 90].map((d) => (
+                        <button
+                          key={d}
+                          type="button"
+                          className={`ghostBtn ${revenueChartDays === d && !revenueDateFrom ? "ghostBtn--active" : ""}`}
+                          onClick={() => {
+                            setRevenueChartDays(d);
+                            setRevenueDateFrom("");
+                            setRevenueDateTo("");
+                          }}
+                        >
+                          {d === 90 ? "Kvartál" : `${d} dní`}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="chartDateFilter">
+                      <label>Od: <input type="date" className="field" value={revenueDateFrom} onChange={e => setRevenueDateFrom(e.target.value)} /></label>
+                      <label>Do: <input type="date" className="field" value={revenueDateTo} onChange={e => setRevenueDateTo(e.target.value)} /></label>
+                    </div>
+                  </div>
+
+                  {revenueChartData.entries.length === 0 ? (
+                    <p className="muted">Žádná data k zobrazení.</p>
+                  ) : (
+                    <div className="chartScrollWrap">
+                      <div className="chartBars">
+                        {revenueChartData.entries.map(([dateKey, value]) => {
+                          const [y, m, d] = dateKey.split("-");
+                          const label = `${d}.${m}.`;
+                          const pct = ((value / revenueChartData.maxVal) * 100).toFixed(0);
+                          return (
+                            <div key={dateKey} className="chartBarCol" title={`${d}.${m}.${y}: ${value} Kč`}>
+                              <div className="chartBarValue">{value > 0 ? value : ""}</div>
+                              <div className="chartBarTrack">
+                                <div className="chartBarFill" style={{ height: `${pct}%` }} />
+                              </div>
+                              <span className="chartBarLabel">{label}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </section>
     </main>

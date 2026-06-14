@@ -248,6 +248,157 @@ body {
   font-size: 16px;
 }
 
+.widgetFooter {
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.widgetFooter img {
+  height: 18px;
+}
+
+.widgetFooter a {
+  color: inherit;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.widgetFooter a:hover {
+  text-decoration: underline;
+}
+
+.widgetFooter .heart {
+  color: #e11d48;
+}
+
+.statCard--clickable {
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.statCard--clickable:hover {
+  border-color: var(--brand);
+  box-shadow: 0 0 18px rgba(var(--brand-rgb), 0.18);
+}
+
+/* Modal */
+.modalOverlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(0,0,0,0.7);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+
+.modalCard {
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.modalHeader {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--line);
+}
+
+.modalHeader h3 { margin: 0; font-size: 18px; }
+
+.modalBody { padding: 20px; }
+
+.chartFilters {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.chartPresets {
+  display: flex;
+  gap: 8px;
+}
+
+.chartDateFilter {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.chartDateFilter label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+.chartDateFilter .field {
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.chartScrollWrap {
+  overflow-x: auto;
+  padding-bottom: 8px;
+  margin: 0 -10px;
+}
+
+/* Bar chart */
+.chartBars {
+  display: flex; align-items: flex-end; gap: 6px;
+  height: 280px; padding-top: 30px;
+  min-width: min-content;
+  padding: 30px 10px 0;
+}
+
+.chartBarCol {
+  flex: 0 0 45px; display: flex; flex-direction: column; align-items: center;
+  height: 100%;
+}
+
+.chartBarValue {
+  font-size: 10px; color: var(--text); margin-bottom: 4px;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.chartBarTrack {
+  flex: 1; width: 100%; max-width: 28px;
+  background: var(--surface-3); border-radius: 4px 4px 0 0;
+  display: flex; align-items: flex-end; overflow: hidden;
+  box-shadow: inset 0 0 10px rgba(0,0,0,0.1);
+}
+
+.chartBarFill {
+  width: 100%; background: linear-gradient(180deg, var(--brand), var(--brand-strong));
+  border-radius: 4px 4px 0 0; min-height: 2px;
+  transition: height 0.3s;
+  box-shadow: 0 0 12px rgba(var(--brand-rgb), 0.3);
+}
+
+.chartBarLabel {
+  font-size: 11px; color: var(--text-soft); margin-top: 8px;
+  white-space: nowrap;
+  transform: rotate(-30deg);
+  transform-origin: center;
+}
+
+.ghostBtn--active {
+  background: var(--brand) !important;
+  color: var(--brand-contrast) !important;
+  font-weight: 700;
+}
+
 .timeTableWrap {
   overflow-x: auto;
   border-radius: 14px;
@@ -315,12 +466,14 @@ body {
 .timeTable thead th {
   color: var(--text-soft);
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .timeTable tbody th {
   text-align: left;
-  padding-left: 14px;
-  width: 110px;
+  padding: 10px 14px;
+  white-space: nowrap;
+  width: 1px;
   font-weight: 700;
 }
 
@@ -1474,6 +1627,11 @@ button:disabled {
   background: var(--surface-2);
 }
 
+.adminItem--pending {
+  background: rgba(255, 193, 7, 0.08) !important;
+  border-left: 3px solid #ffc107 !important;
+}
+
 .dashboardCard .adminList {
   margin-top: 4px;
 }
@@ -1541,3 +1699,205 @@ button:disabled {
   font-size: 12px;
   font-weight: 800;
 }
+
+/* ===== Superadmin dashboard ===== */
+
+.saGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 16px;
+}
+
+.saCard {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.saCardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.saCardTitle {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.saCardTitle span {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-soft);
+}
+
+.saCardMeta {
+  font-size: 12px;
+  color: var(--text-soft);
+  background: var(--surface-3);
+  padding: 4px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.saAdmins {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.saAdminRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+
+.saAdminName {
+  font-weight: 600;
+}
+
+.saAdminEmail {
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.saEmbedBox {
+  background: var(--bg-field);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.saEmbedBox code {
+  display: block;
+  font-size: 12px;
+  word-break: break-all;
+  color: var(--text-soft);
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+
+.saEmbedBox textarea {
+  width: 100%;
+  background: var(--bg-main);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  resize: vertical;
+  min-height: 50px;
+}
+
+.saActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.saBtn {
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.saBtn:hover { background: var(--surface-3); }
+
+.saBtn--primary {
+  background: linear-gradient(180deg, rgba(var(--brand-rgb), 0.24), rgba(var(--brand-rgb), 0.12));
+  border-color: rgba(var(--brand-rgb), 0.4);
+}
+
+.saBtn--primary:hover {
+  background: linear-gradient(180deg, rgba(var(--brand-rgb), 0.34), rgba(var(--brand-rgb), 0.18));
+}
+
+.saBtn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-soft);
+}
+
+.saBtn--ghost:hover {
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+
+.saDivider {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 0;
+}
+
+.saEmpty {
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.saDetailPanel {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 20px;
+}
+
+.saDetailHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 18px;
+  gap: 12px;
+}
+
+.saDetailHeader h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.saDetailBody {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.saSection h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+@media (max-width: 900px) {
+  .saGrid { grid-template-columns: 1fr; }
+  .saDetailBody { grid-template-columns: 1fr; }
+}
+
+/* WYSIWYG emailový editor */
+.richEditorToolbar { display:flex; gap:4px; flex-wrap:wrap; padding:6px 8px; background:var(--bg-field); border-radius:8px 8px 0 0; border:1px solid var(--line); border-bottom:none; align-items:center; }
+.richEditorToolbar button { background:transparent; border:1px solid transparent; color:var(--text-soft); cursor:pointer; border-radius:6px; padding:4px 8px; font-size:13px; }
+.richEditorToolbar button:hover { background:var(--surface-3); color:var(--text); }
+.richEditor { min-height:200px; max-height:400px; overflow-y:auto; border:1px solid var(--line); border-radius:0 0 8px 8px; padding:16px; background:var(--bg-field); font-size:14px; line-height:1.6; outline:none; font-family:Inter,Segoe UI,Arial,sans-serif; color:var(--text); }
+.richEditor table { width:100%; border-collapse:collapse; }
+.richEditor td, .richEditor th { padding:6px 10px; border:1px solid var(--line); }
+.richEditor h2 { color:var(--text); margin:0 0 8px; }
+.richEditor p { margin:4px 0; }
+.tplVar { background:rgba(var(--brand-rgb),0.15); color:var(--brand); padding:1px 6px; border-radius:5px; font-weight:600; font-size:13px; margin:0 2px; display:inline-block; user-select:all; cursor:default; }
