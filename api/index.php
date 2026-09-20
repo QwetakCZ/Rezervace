@@ -8,10 +8,15 @@ require_once __DIR__.'/db.php';
 require_once __DIR__.'/auth.php';
 require_once __DIR__.'/slots.php';
 require_once __DIR__.'/mail.php';
+require_once __DIR__.'/sms.php';
 $config=require __DIR__.'/config.php';
 try{DB::connect($config['db']);}catch(\Throwable $e){http_response_code(500);header('Content-Type: application/json');echo json_encode(['ok'=>false,'error'=>'DB']);exit;}
 $auth=new Auth($config['auth']['secret'],$config['auth']['admin_token_ttl']);
-$mailer=new Mailer('info@rezervace.tt-denik.cz','Rezervace TT');
+$mailer=new Mailer(
+    (string)($config['mail']['from_email']??'info@rezervace.tt-denik.cz'),
+    (string)($config['mail']['from_name']??'Rezervace TT')
+);
+$smsManager=new SmsManagerClient((string)$config['auth']['secret']);
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Authorization');
@@ -34,6 +39,8 @@ function normTime(string $v):string{$r=trim($v);if(preg_match('/^\d{2}:\d{2}$/',
 function getBS(int $cid,int $def):array{$row=DB::queryOne('SELECT company_id,min_advance_minutes FROM company_booking_settings WHERE company_id=? LIMIT 1',[$cid]);if(!$row){DB::exec('INSERT INTO company_booking_settings (company_id,min_advance_minutes) VALUES(?,?) ON DUPLICATE KEY UPDATE company_id=company_id',[$cid,$def]);return['companyId'=>$cid,'minAdvanceMinutes'=>$def];}return['companyId'=>(int)$row['company_id'],'minAdvanceMinutes'=>max((int)$row['min_advance_minutes'],0)];}
 function hashPw(string $p):string{return password_hash($p,PASSWORD_BCRYPT,['cost'=>10]);}
 function getBookingSettings(int $cid,int $def):array{return getBS($cid,$def);}
+function appUrl(array $config):string{return rtrim((string)($config['app']['url']??'https://rezervace.tt-denik.cz'),'/');}
+function reservationSlots(int $reservationId):array{return DB::query('SELECT date,time_start,time_end,price,resource_id FROM reservation_slots WHERE reservation_id=? ORDER BY date,time_start',[$reservationId]);}
 $routed=require __DIR__.'/routes/public.php';if($routed)exit;
 $routed=require __DIR__.'/routes/player.php';if($routed)exit;
 $routed=require __DIR__.'/routes/admin.php';if($routed)exit;

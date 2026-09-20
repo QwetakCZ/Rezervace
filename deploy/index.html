@@ -3,10 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <base href="/" />
+    <script>
+      (() => {
+        const pathname = window.location.pathname;
+        const adminIndex = pathname.indexOf("/admin");
+        const basePath = adminIndex >= 0
+          ? `${pathname.slice(0, adminIndex) || ""}/`
+          : pathname.endsWith("/")
+            ? pathname
+            : pathname.replace(/[^/]*$/, "");
+        const base = document.createElement("base");
+        base.href = basePath || "/";
+        document.head.appendChild(base);
+      })();
+    </script>
     <title>Rezervace TT</title>
-    <script type="module" crossorigin src="./index-CgV-AHJ5.js"></script>
-    <link rel="stylesheet" crossorigin href="./index-4KB9nYSv.css">
+    <script type="module" crossorigin src="./index-hVs1BB5f.js"></script>
+    <link rel="stylesheet" crossorigin href="./index-YnPHy2N8.css">
   </head>
   <body>
     <div id="root"></div>

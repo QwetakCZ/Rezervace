@@ -11,7 +11,7 @@ Write-Host "  REZERVACE - Build & Deploy (PHP)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # --- 1. Build frontend ---
-Write-Host "`n[1/3] Builduji React frontend..." -ForegroundColor Yellow
+Write-Host "`n[1/4] Builduji React frontend..." -ForegroundColor Yellow
 
 $frontendDir = Join-Path $root "frontend"
 if (-not (Test-Path $frontendDir)) {
@@ -43,7 +43,7 @@ Pop-Location
 Write-Host "Build dokončen." -ForegroundColor Green
 
 # --- 2. Připravit deploy složku ---
-Write-Host "`n[2/3] Připravuji deploy složku..." -ForegroundColor Yellow
+Write-Host "`n[2/4] Připravuji deploy složku..." -ForegroundColor Yellow
 
 $deployDir = Join-Path $root "deploy"
 $distDir = Join-Path $root "frontend\dist"
@@ -53,9 +53,11 @@ if (-not (Test-Path $distDir)) {
     exit 1
 }
 
-# Vyčistit staré soubory (kromě api/ složky a .htaccess)
+# Vyčistit starý frontend, ale zachovat API konfiguraci a SQL migrace.
 Write-Host "Čistím staré soubory..." -ForegroundColor Gray
-Get-ChildItem -Path $deployDir -File -Exclude ".htaccess" | Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path $deployDir -File | Where-Object {
+    $_.Name -ne ".htaccess" -and $_.Extension -ne ".sql"
+} | Remove-Item -Force -ErrorAction SilentlyContinue
 
 # Odstranit staré složky kromě api
 Get-ChildItem -Path $deployDir -Directory -Exclude "api" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
@@ -64,8 +66,20 @@ Get-ChildItem -Path $deployDir -Directory -Exclude "api" | Remove-Item -Recurse 
 Write-Host "Kopíruji soubory z dist/..." -ForegroundColor Gray
 Copy-Item -Path "$distDir\*" -Destination $deployDir -Recurse -Force
 
-# --- 3. Hotovo ---
-Write-Host "`n[3/3] Hotovo!" -ForegroundColor Yellow
+# --- 3. Synchronizovat PHP API ---
+Write-Host "`n[3/4] Synchronizuji PHP API..." -ForegroundColor Yellow
+$apiSource = Join-Path $root "api"
+$apiDeploy = Join-Path $deployDir "api"
+New-Item -ItemType Directory -Path (Join-Path $apiDeploy "routes") -Force | Out-Null
+
+@("index.php", "db.php", "auth.php", "mail.php", "sms.php", "slots.php", ".htaccess") | ForEach-Object {
+    Copy-Item -LiteralPath (Join-Path $apiSource $_) -Destination (Join-Path $apiDeploy $_) -Force
+}
+Copy-Item -Path (Join-Path $apiSource "routes\*.php") -Destination (Join-Path $apiDeploy "routes") -Force
+Write-Host "Lokální api/config.php nebyl kopírován; deploy konfigurace zůstala zachována." -ForegroundColor Gray
+
+# --- 4. Hotovo ---
+Write-Host "`n[4/4] Hotovo!" -ForegroundColor Yellow
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Deploy složka je připravena: $deployDir" -ForegroundColor Green
 Write-Host ""

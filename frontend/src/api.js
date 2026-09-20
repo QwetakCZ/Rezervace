@@ -8,11 +8,20 @@ function normalizeBaseUrl(value) {
 // Např. pro /Rezervace/deploy/ vrátí /Rezervace/deploy
 // Pro subdoménu (/) vrátí prázdný string
 function detectApiBase() {
-  if (configuredApiUrl) {
+  // Samotné "/" znamená stejný origin. Necháme proto proběhnout detekci,
+  // aby fungoval také lokální build v podsložce /Rezervace.
+  if (configuredApiUrl && configuredApiUrl !== "/") {
     return normalizeBaseUrl(configuredApiUrl);
   }
-  // Detekce z URL stránky - odebere poslední segment (index.html nebo SPA route)
+  // Admin SPA běží pod /admin a /admin/dashboard, API ale zůstává v kořeni
+  // aplikace. Na localhostu tak zachováme prefix /Rezervace, na produkci "".
   const path = window.location.pathname;
+  const adminIndex = path.indexOf('/admin');
+  if (adminIndex >= 0) {
+    return normalizeBaseUrl(path.slice(0, adminIndex));
+  }
+
+  // Detekce z URL stránky - odebere poslední segment (index.html nebo SPA route)
   // Pokud jsme v rootu, vrať prázdný string
   if (path === '/' || path === '') return '';
   // Jinak vezmi složku, kde je aplikace
@@ -112,7 +121,7 @@ async function request(path, options = {}) {
 
 export const api = {
   getCompanyId: () => detectedCompanyId,
-  getCompany: (companyId = detectedCompanyId || 1) => {
+  getCompany: (companyId = detectedCompanyId || 2) => {
     const params = new URLSearchParams();
     if (companyId) {
       params.set("companyId", String(companyId));
@@ -155,6 +164,14 @@ export const api = {
       body: JSON.stringify(payloadWithCompany),
     });
   },
+  getCancellationInfo: (token) =>
+    request(`/api/reservations/cancel-info?token=${encodeURIComponent(token)}`),
+  cancelReservationByToken: (token) =>
+    request('/api/reservations/cancel', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    }),
   playerRegister: async (payload, companyId = detectedCompanyId) => {
     const data = await request("/api/player/register", {
       method: "POST",
@@ -183,6 +200,12 @@ export const api = {
     return data;
   },
   getPlayerProfile: () => request("/api/player/me", { playerAuth: true }),
+  getPlayerReservations: () => request('/api/player/reservations', { playerAuth: true }),
+  cancelPlayerReservation: (reservationId) =>
+    request(`/api/player/reservations/${reservationId}/cancel`, {
+      method: 'PATCH',
+      playerAuth: true,
+    }),
   adminLogin: async (email, password) => {
     const data = await request("/api/admin/login", {
       method: "POST",
@@ -324,13 +347,19 @@ export const api = {
       body: JSON.stringify(payload),
       auth: true,
     }),
-  getAdminReservations: ({ status = "", date = "", limit = 50 } = {}) => {
+  getAdminReservations: ({ status = "", date = "", dateFrom = "", dateTo = "", limit = 50 } = {}) => {
     const params = new URLSearchParams();
     if (status) {
       params.set("status", status);
     }
     if (date) {
       params.set("date", date);
+    }
+    if (dateFrom) {
+      params.set("dateFrom", dateFrom);
+    }
+    if (dateTo) {
+      params.set("dateTo", dateTo);
     }
     params.set("limit", String(limit));
     return request(`/api/admin/reservations?${params.toString()}`, { auth: true });
@@ -342,6 +371,13 @@ export const api = {
       method: "PATCH",
       auth: true,
     }),
+  rejectReservation: (reservationId, reason = "") =>
+    request(`/api/admin/reservations/${reservationId}/reject`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
+      auth: true,
+    }),
   cancelReservation: (reservationId, reason = "") =>
     request(`/api/admin/reservations/${reservationId}/cancel`, {
       method: "PATCH",
@@ -349,7 +385,22 @@ export const api = {
       body: JSON.stringify({ reason }),
       auth: true,
     }),
+  createRecurringReservations: (payload) =>
+    request('/api/admin/reservations/recurring', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      auth: true,
+    }),
+  createHallBlock: (payload) =>
+    request('/api/admin/hall-blocks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      auth: true,
+    }),
   getEmailLogs: () => request("/api/admin/email-logs", { auth: true }),
+  getSmsLogs: () => request("/api/admin/sms-logs", { auth: true }),
   getEmailTemplates: () => request("/api/admin/email-templates", { auth: true }),
   saveEmailTemplate: (type, subject, bodyHtml) =>
     request("/api/admin/email-templates", {

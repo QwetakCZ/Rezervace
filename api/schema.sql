@@ -44,6 +44,7 @@ CREATE TABLE `resources` (
   `category_id` int(11) NOT NULL,
   `name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
   `is_active` tinyint(1) NOT NULL DEFAULT '1',
+  `min_booking_slots` int(11) DEFAULT NULL,
   PRIMARY KEY (`id`),
   FOREIGN KEY (`category_id`) REFERENCES `categories` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -64,6 +65,9 @@ CREATE TABLE `pricing_windows` (
 CREATE TABLE `company_booking_settings` (
   `company_id` int(11) NOT NULL,
   `min_advance_minutes` int(11) NOT NULL DEFAULT 120,
+  `sms_enabled` tinyint(1) NOT NULL DEFAULT 0,
+  `sms_api_key_encrypted` text COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `sms_confirmation_template` text COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`company_id`),
   FOREIGN KEY (`company_id`) REFERENCES `companies` (`id`) ON DELETE CASCADE
@@ -74,10 +78,10 @@ CREATE TABLE `reservations` (
   `company_id` int(11) NOT NULL,
   `user_id` int(11) DEFAULT NULL,
   `resource_id` int(11) NOT NULL,
-  `guest_first_name` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `guest_last_name` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `guest_email` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `guest_phone` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `customer_first_name` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `customer_last_name` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `customer_email` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `customer_phone` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `start_time` datetime NOT NULL,
   `end_time` datetime NOT NULL,
   `total_price` decimal(10,2) NOT NULL,
@@ -100,6 +104,25 @@ CREATE TABLE `reservation_slots` (
   UNIQUE KEY `resource_slot_unique` (`resource_id`,`slot_datetime`),
   FOREIGN KEY (`reservation_id`) REFERENCES `reservations` (`id`) ON DELETE CASCADE,
   FOREIGN KEY (`resource_id`) REFERENCES `resources` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `sms_logs` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `company_id` int(11) NOT NULL,
+  `reservation_id` int(11) DEFAULT NULL,
+  `recipient_phone` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `type` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'confirmation',
+  `message` text COLLATE utf8mb4_unicode_ci NOT NULL,
+  `delivery_status` enum('accepted','rejected','failed','skipped') COLLATE utf8mb4_unicode_ci NOT NULL,
+  `request_id` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `message_id` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `error_message` varchar(1000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `sent_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `sms_logs_company_sent_idx` (`company_id`,`sent_at`),
+  KEY `sms_logs_reservation_idx` (`reservation_id`),
+  FOREIGN KEY (`company_id`) REFERENCES `companies` (`id`) ON DELETE CASCADE,
+  FOREIGN KEY (`reservation_id`) REFERENCES `reservations` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -146,6 +169,10 @@ CREATE TABLE IF NOT EXISTS `reservations` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `company_id` int(11) NOT NULL,
   `user_id` int(11) NOT NULL,
+  `customer_first_name` varchar(100) DEFAULT NULL,
+  `customer_last_name` varchar(100) DEFAULT NULL,
+  `customer_email` varchar(255) DEFAULT NULL,
+  `customer_phone` varchar(50) DEFAULT NULL,
   `category_id` int(11) NOT NULL,
   `total_price` decimal(10,2) NOT NULL DEFAULT 0.00,
   `status` enum('pending','confirmed','cancelled') NOT NULL DEFAULT 'confirmed',

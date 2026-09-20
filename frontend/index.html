@@ -3,7 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <base href="/" />
+    <script>
+      (() => {
+        const pathname = window.location.pathname;
+        const adminIndex = pathname.indexOf("/admin");
+        const basePath = adminIndex >= 0
+          ? `${pathname.slice(0, adminIndex) || ""}/`
+          : pathname.endsWith("/")
+            ? pathname
+            : pathname.replace(/[^/]*$/, "");
+        const base = document.createElement("base");
+        base.href = basePath || "/";
+        document.head.appendChild(base);
+      })();
+    </script>
     <title>Rezervace TT</title>
   </head>
   <body>

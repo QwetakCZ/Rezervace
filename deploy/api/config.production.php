@@ -39,8 +39,15 @@ return [
         'secret'          => $AUTH_SECRET,
         'admin_token_ttl' => 43200,
     ],
+    'app' => [
+        'url' => 'https://rezervace.tt-denik.cz',
+    ],
+    'mail' => [
+        'from_email' => 'info@rezervace.tt-denik.cz',
+        'from_name' => 'Rezervace TT',
+    ],
     'defaults' => [
         'min_advance_minutes' => 120,
-        'company_id'          => 1,
+        'company_id'          => 2,
     ],
 ];

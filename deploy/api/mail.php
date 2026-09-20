@@ -14,6 +14,26 @@ class Mailer
         $this->fromName  = $fromName;
     }
 
+    /** Vrátí český název dne v týdnu pro datum rezervace. */
+    public static function weekdayName(string $date): string
+    {
+        $raw = trim($date);
+        $parsed = DateTimeImmutable::createFromFormat('!Y-m-d', $raw);
+        if (!$parsed || $parsed->format('Y-m-d') !== $raw) {
+            return '';
+        }
+
+        return [
+            1 => 'pondělí',
+            2 => 'úterý',
+            3 => 'středa',
+            4 => 'čtvrtek',
+            5 => 'pátek',
+            6 => 'sobota',
+            7 => 'neděle',
+        ][(int)$parsed->format('N')] ?? '';
+    }
+
     /**
      * Odešle email a zaloguje do DB
      */
@@ -33,12 +53,14 @@ class Mailer
         ];
 
         $sent = @mail($to, $subject, $bodyHtml, implode("\r\n", $headers));
+        $deliveryStatus = $sent ? 'sent' : 'failed';
+        $errorMessage = $sent ? null : 'PHP mail() vrátil false';
 
         // Zalogovat (i když se nepovedlo — pro přehled)
         try {
             DB::exec(
-                'INSERT INTO email_logs (company_id, reservation_id, recipient_email, recipient_name, type, subject) VALUES (?,?,?,?,?,?)',
-                [$companyId, $reservationId, $to, $recipientName ?: '', $type, $subject]
+                'INSERT INTO email_logs (company_id, reservation_id, recipient_email, recipient_name, type, subject, delivery_status, error_message) VALUES (?,?,?,?,?,?,?,?)',
+                [$companyId, $reservationId, $to, $recipientName ?: '', $type, $subject, $deliveryStatus, $errorMessage]
             );
         } catch (\Throwable $e) {
             // tabulka nemusí ještě existovat — nevadí
@@ -81,13 +103,24 @@ class Mailer
                 'phone' => $customer['phone'] ?? '',
                 'companyName' => $company['name'] ?? '',
                 'date' => $reservation['date'] ?? '',
+                'weekday' => self::weekdayName((string)($reservation['date'] ?? '')),
                 'slots' => implode(', ', array_map(fn($s) => substr($s, 0, 5), $slots)),
                 'slotCount' => (string)count($slots),
                 'totalPrice' => number_format((float)($reservation['totalPrice'] ?? 0), 0, ',', ' '),
                 'note' => $reservation['note'] ?? '',
+                'cancelUrl' => $reservation['cancelUrl'] ?? '',
             ];
             $subject = $this->replaceVars($tpl['subject'], $vars);
             $body = $this->replaceVars($tpl['bodyHtml'], $vars);
+            // Starší uložené šablony nemusí znát {{cancelUrl}}. Odkaz proto
+            // doplníme automaticky, aby storno hosta fungovalo i bez ruční úpravy šablony.
+            if (!empty($vars['cancelUrl']) && !str_contains($tpl['bodyHtml'], '{{cancelUrl}}')) {
+                $safeCancelUrl = htmlspecialchars((string)$vars['cancelUrl'], ENT_QUOTES, 'UTF-8');
+                $cancelLink = "<p style='margin-top:18px'><a href='{$safeCancelUrl}' style='display:inline-block;padding:10px 16px;border-radius:8px;background:#e11d48;color:#fff;text-decoration:none;font-weight:700'>Zrušit rezervaci</a></p>";
+                $body = stripos($body, '</body>') !== false
+                    ? (string)preg_replace('/<\/body>/i', $cancelLink . '</body>', $body, 1)
+                    : $body . $cancelLink;
+            }
         } else {
             $subject = "Shrnutí rezervace – {$company['name']}";
             $body = $this->buildCustomerEmail($company, $customer, $reservation);
@@ -115,6 +148,7 @@ class Mailer
                 'phone' => $customer['phone'] ?? '',
                 'companyName' => $company['name'] ?? '',
                 'date' => $reservation['date'] ?? '',
+                'weekday' => self::weekdayName((string)($reservation['date'] ?? '')),
                 'slots' => implode(', ', array_map(fn($s) => substr($s, 0, 5), $slots)),
                 'slotCount' => (string)count($slots),
                 'totalPrice' => number_format((float)($reservation['totalPrice'] ?? 0), 0, ',', ' '),
@@ -148,6 +182,7 @@ class Mailer
                 'phone' => $customer['phone'] ?? '',
                 'companyName' => $company['name'] ?? '',
                 'date' => $reservation['date'] ?? '',
+                'weekday' => self::weekdayName((string)($reservation['date'] ?? '')),
                 'slots' => implode(', ', array_map(fn($s) => substr($s, 0, 5), $slots)),
                 'slotCount' => (string)count($slots),
                 'totalPrice' => number_format((float)($reservation['totalPrice'] ?? 0), 0, ',', ' '),
@@ -163,6 +198,40 @@ class Mailer
 
         $name = trim(($customer['firstName'] ?? '') . ' ' . ($customer['lastName'] ?? ''));
         $this->send($customer['email'], $subject, $body, $cid, $reservationId, 'cancellation', $name);
+    }
+
+    /** Email při zamítnutí čekající rezervace. */
+    public function sendRejection(array $company, array $customer, array $reservation, int $reservationId, string $reason = ''): void
+    {
+        $cid=(int)$company['id']; $slots=$reservation['slotStarts']??[];
+        $vars=[
+            'firstName'=>$customer['firstName']??'', 'lastName'=>$customer['lastName']??'',
+            'email'=>$customer['email']??'', 'companyName'=>$company['name']??'',
+            'date'=>$reservation['date']??'',
+            'weekday'=>self::weekdayName((string)($reservation['date']??'')),
+            'slots'=>implode(', ',array_map(fn($s)=>substr($s,0,5),$slots)),
+            'slotCount'=>(string)count($slots), 'reason'=>$reason?:'Rezervace nebyla schválena',
+        ];
+        $tpl=$this->getTemplate($cid,'rejection');
+        if($tpl){$subject=$this->replaceVars($tpl['subject'],$vars);$body=$this->replaceVars($tpl['bodyHtml'],$vars);}
+        else{
+            $subject="Rezervace zamítnuta – {$company['name']}";
+            $safeReason=htmlspecialchars($vars['reason'],ENT_QUOTES,'UTF-8');
+            $body="<!DOCTYPE html><html><head><meta charset='utf-8'><style>{$this->style()}</style></head><body><div class='card'><h2>Rezervace nebyla schválena</h2><p>Vaše rezervace v <strong>".htmlspecialchars((string)$company['name'],ENT_QUOTES,'UTF-8')."</strong> byla zamítnuta.</p><div class='note'>Důvod: {$safeReason}</div><div class='footer'>Rezervační systém • ".htmlspecialchars((string)$company['name'],ENT_QUOTES,'UTF-8')."</div></div></body></html>";
+        }
+        $name=trim(($customer['firstName']??'').' '.($customer['lastName']??''));
+        $this->send($customer['email'],$subject,$body,$cid,$reservationId,'rejection',$name);
+    }
+
+    /** Potvrzení, že zákazník sám rezervaci zrušil. */
+    public function sendCustomerCancellationConfirmation(array $company, array $customer, array $reservation, int $reservationId): void
+    {
+        $slots=$reservation['slotStarts']??[]; $slotList=implode(', ',array_map(fn($s)=>substr($s,0,5),$slots));
+        $companyName=htmlspecialchars((string)($company['name']??''),ENT_QUOTES,'UTF-8');
+        $date=htmlspecialchars((string)($reservation['date']??''),ENT_QUOTES,'UTF-8');
+        $body="<!DOCTYPE html><html><head><meta charset='utf-8'><style>{$this->style()}</style></head><body><div class='card'><h2>Storno potvrzeno</h2><p>Vaše rezervace v <strong>{$companyName}</strong> byla zrušena a termín je znovu volný.</p><table><tr><th>Datum</th><td>{$date}</td></tr><tr><th>Časy</th><td>".htmlspecialchars($slotList,ENT_QUOTES,'UTF-8')."</td></tr></table><div class='footer'>Rezervační systém • {$companyName}</div></div></body></html>";
+        $name=trim(($customer['firstName']??'').' '.($customer['lastName']??''));
+        $this->send($customer['email'],"Storno rezervace potvrzeno – {$company['name']}",$body,(int)$company['id'],$reservationId,'customer_cancellation',$name);
     }
 
     // --- HTML šablony ---
@@ -218,7 +287,7 @@ class Mailer
         $s = $this->style();
         $slots = $reservation['slotStarts'] ?? [];
         $slotList = implode(', ', array_map(fn($s) => substr($s, 0, 5), $slots));
-        $count = count($slots);
+        $count = count($slots); $slotMinutes=(int)($reservation['slotMinutes']??30);
 
         return "<!DOCTYPE html><html><head><meta charset='utf-8'><style>{$s}</style></head><body>"
             . "<div class='card'>"
@@ -230,7 +299,7 @@ class Mailer
             . "<tr><th>E-mail</th><td>{$reservation['email']}</td></tr>"
             . "<tr><th>Telefon</th><td>" . ($reservation['phone'] ?: '—') . "</td></tr>"
             . "<tr><th>Datum</th><td>{$reservation['date']}</td></tr>"
-            . "<tr><th>Časy</th><td>{$slotList} ({$count}x 30 min)</td></tr>"
+            . "<tr><th>Časy</th><td>{$slotList} ({$count}× {$slotMinutes} min)</td></tr>"
             . "<tr><th>Cena</th><td class='price'>" . number_format($reservation['totalPrice'], 0, ',', ' ') . " Kč</td></tr>"
             . "</table>"
             . ($reservation['note'] ? "<div class='note'>📝 Poznámka: {$reservation['note']}</div>" : "")
@@ -244,7 +313,7 @@ class Mailer
         $s = $this->style();
         $slots = $reservation['slotStarts'] ?? [];
         $slotList = implode(', ', array_map(fn($s) => substr($s, 0, 5), $slots));
-        $count = count($slots);
+        $count = count($slots); $slotMinutes=(int)($reservation['slotMinutes']??30);
 
         return "<!DOCTYPE html><html><head><meta charset='utf-8'><style>{$s}</style></head><body>"
             . "<div class='card'>"
@@ -254,11 +323,12 @@ class Mailer
             . "<table>"
             . "<tr><th>Datum</th><td>{$reservation['date']}</td></tr>"
             . "<tr><th>Časy</th><td>{$slotList}</td></tr>"
-            . "<tr><th>Počet bloků</th><td>{$count} × 30 min</td></tr>"
+            . "<tr><th>Počet bloků</th><td>{$count} × {$slotMinutes} min</td></tr>"
             . "<tr><th>Cena celkem</th><td class='price'>" . number_format($reservation['totalPrice'], 0, ',', ' ') . " Kč</td></tr>"
             . "</table>"
             . "<div class='note'>⏳ Po schválení administrátorem Vám přijde potvrzovací email.</div>"
             . ($reservation['note'] ? "<p style='color:#888;font-size:13px'>📝 Vaše poznámka: {$reservation['note']}</p>" : "")
+            . (!empty($reservation['cancelUrl']) ? "<p style='margin-top:18px'><a href='".htmlspecialchars((string)$reservation['cancelUrl'],ENT_QUOTES,'UTF-8')."' style='display:inline-block;padding:10px 16px;border-radius:8px;background:#e11d48;color:#fff;text-decoration:none;font-weight:700'>Zrušit rezervaci</a></p>" : "")
             . "<div class='footer'>Rezervační systém • {$company['name']}</div>"
             . "</div></body></html>";
     }

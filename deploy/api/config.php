@@ -18,6 +18,6 @@ return [
     ],
     'defaults' => [
         'min_advance_minutes' => 120,
-        'company_id'          => 1,
+        'company_id'          => 2,
     ],
 ];

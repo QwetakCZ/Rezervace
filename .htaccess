@@ -1,14 +1,18 @@
 <IfModule mod_rewrite.c>
   RewriteEngine On
 
-  # SPA fallback: všechny neexistující cesty jdou na index.html
-  # POKUD nejde o /api obsah (backend API)
-  RewriteBase /
+  # Zachovat Authorization hlavičku pro PHP API.
+  RewriteCond %{HTTP:Authorization} .
+  RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+  # API zpracovává vlastní .htaccess v podadresáři api/.
+  RewriteRule ^api(?:/|$) - [L]
+
+  # SPA fallback funguje v kořeni domény i v lokální /Rezervace podsložce.
   RewriteRule ^index\.html$ - [L]
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteCond %{REQUEST_FILENAME} !-d
-  RewriteCond %{REQUEST_URI} !^/api(/|$)
-  RewriteRule . index.html [L]
+  RewriteRule ^ index.html [L]
 </IfModule>
 
 <IfModule mod_headers.c>

@@ -186,8 +186,8 @@ if ($path === '/admin/categories') {
 
     if ($method === 'GET') {
         $rcid = qInt('companyId'); $cid = isSA($a) ? ($rcid ?: null) : (int)$a['company_id'];
-        $rows = DB::query('SELECT id,company_id,name,description,default_slot_duration,icon FROM categories ' . ($cid ? 'WHERE company_id=?' : '') . ' ORDER BY id', $cid ? [$cid] : []);
-        jsonOut(array_map(fn($c) => ['id' => (int)$c['id'], 'companyId' => (int)$c['company_id'], 'name' => $c['name'], 'description' => $c['description'], 'icon' => $c['icon'] ?: null, 'defaultSlotDuration' => (int)$c['default_slot_duration']], $rows));
+        $rows = DB::query('SELECT id,company_id,name,description,default_slot_duration,min_booking_slots,icon FROM categories ' . ($cid ? 'WHERE company_id=?' : '') . ' ORDER BY id', $cid ? [$cid] : []);
+        jsonOut(array_map(fn($c) => ['id' => (int)$c['id'], 'companyId' => (int)$c['company_id'], 'name' => $c['name'], 'description' => $c['description'], 'icon' => $c['icon'] ?: null, 'defaultSlotDuration' => (int)$c['default_slot_duration'], 'minBookingSlots' => max((int)$c['min_booking_slots'],1)], $rows));
     }
 
     if ($method === 'POST') {
@@ -195,14 +195,15 @@ if ($path === '/admin/categories') {
         $cid = isSA($a) ? (int)($b['companyId'] ?? 0) : (int)$a['company_id'];
         $n = trim($b['name'] ?? ''); $desc = trim($b['description'] ?? '');
         $dsd = (int)($b['defaultSlotDuration'] ?? 0);
+        $mbs = (int)($b['minBookingSlots'] ?? 1);
         $icon = in_array(($b['icon'] ?? ''), ['trophy','cpu','dumbbell','calendar','users','star']) ? $b['icon'] : null;
 
-        if (!$cid || !$n || $dsd <= 0) errOut('Vyplňte company, název a délku slotu v minutách.');
+        if (!$cid || !$n || $dsd <= 0 || $mbs < 1 || $mbs > 48) errOut('Vyplňte company, název, délku slotu a minimální počet bloků.');
         if (!DB::queryOne('SELECT id FROM companies WHERE id=? LIMIT 1', [$cid])) errOut('Company neexistuje.', 404);
 
-        $nid = DB::insert('INSERT INTO categories (company_id,name,description,icon,default_slot_duration) VALUES(?,?,?,?,?)', [$cid, $n, $desc ?: null, $icon, $dsd]);
-        $cr = DB::queryOne('SELECT id,company_id,name,description,default_slot_duration,icon FROM categories WHERE id=? LIMIT 1', [$nid]);
-        jsonOut(['id' => (int)$cr['id'], 'companyId' => (int)$cr['company_id'], 'name' => $cr['name'], 'description' => $cr['description'], 'icon' => $cr['icon'] ?: null, 'defaultSlotDuration' => (int)$cr['default_slot_duration']], 201);
+        $nid = DB::insert('INSERT INTO categories (company_id,name,description,icon,default_slot_duration,min_booking_slots) VALUES(?,?,?,?,?,?)', [$cid, $n, $desc ?: null, $icon, $dsd, $mbs]);
+        $cr = DB::queryOne('SELECT id,company_id,name,description,default_slot_duration,min_booking_slots,icon FROM categories WHERE id=? LIMIT 1', [$nid]);
+        jsonOut(['id' => (int)$cr['id'], 'companyId' => (int)$cr['company_id'], 'name' => $cr['name'], 'description' => $cr['description'], 'icon' => $cr['icon'] ?: null, 'defaultSlotDuration' => (int)$cr['default_slot_duration'], 'minBookingSlots'=>max((int)$cr['min_booking_slots'],1)], 201);
     }
 
     errOut('Method not allowed.', 405);
@@ -216,6 +217,7 @@ if (preg_match('#^/admin/categories/(\d+)$#', $path, $m)) {
         $b = getJson();
         $n = trim($b['name'] ?? ''); $dp = array_key_exists('description', $b ?? []);
         $desc = trim($b['description'] ?? ''); $dsdr = $b['defaultSlotDuration'] ?? null;
+        $mbsr = $b['minBookingSlots'] ?? null;
         $ip = array_key_exists('icon', $b ?? []);
         $icon = in_array(($b['icon'] ?? ''), ['trophy','cpu','dumbbell','calendar','users','star']) ? $b['icon'] : null;
 
@@ -229,12 +231,13 @@ if (preg_match('#^/admin/categories/(\d+)$#', $path, $m)) {
         if ($dp) { $f[] = 'description=?'; $v[] = $desc ?: null; }
         if ($ip) { $f[] = 'icon=?'; $v[] = $icon; }
         if ($dsdr !== null) { $d = (int)$dsdr; if ($d <= 0) errOut('Délka slotu musí být kladné číslo.'); $f[] = 'default_slot_duration=?'; $v[] = $d; }
+        if ($mbsr !== null) { $m = (int)$mbsr; if ($m < 1 || $m > 48) errOut('Minimální počet bloků musí být 1 až 48.'); $f[] = 'min_booking_slots=?'; $v[] = $m; }
         if (empty($f)) errOut('Není co upravit.');
 
         $v[] = $catId;
         DB::exec('UPDATE categories SET ' . implode(',', $f) . ' WHERE id=?', $v);
-        $up = DB::queryOne('SELECT id,company_id,name,description,default_slot_duration,icon FROM categories WHERE id=? LIMIT 1', [$catId]);
-        jsonOut(['id' => (int)$up['id'], 'companyId' => (int)$up['company_id'], 'name' => $up['name'], 'description' => $up['description'], 'icon' => $up['icon'] ?: null, 'defaultSlotDuration' => (int)$up['default_slot_duration']]);
+        $up = DB::queryOne('SELECT id,company_id,name,description,default_slot_duration,min_booking_slots,icon FROM categories WHERE id=? LIMIT 1', [$catId]);
+        jsonOut(['id' => (int)$up['id'], 'companyId' => (int)$up['company_id'], 'name' => $up['name'], 'description' => $up['description'], 'icon' => $up['icon'] ?: null, 'defaultSlotDuration' => (int)$up['default_slot_duration'], 'minBookingSlots'=>max((int)$up['min_booking_slots'],1)]);
     }
 
     if ($method === 'DELETE') {

@@ -38,12 +38,13 @@ if ($path === '/company') {
 if ($path === '/categories') {
     $cid = qInt('companyId') ?: $config['defaults']['company_id'];
     $cats = DB::query(
-        "SELECT c.id, c.name, c.description, c.icon, c.default_slot_duration, COUNT(r.id) AS active_resource_count
+        "SELECT c.id, c.name, c.description, c.icon, c.default_slot_duration, c.min_booking_slots, COUNT(r.id) AS active_resource_count
          FROM categories c LEFT JOIN resources r ON r.category_id=c.id AND r.is_active=1
-         WHERE c.company_id=? GROUP BY c.id ORDER BY c.id", [$cid]);
+         WHERE c.company_id=? GROUP BY c.id HAVING COUNT(r.id)>0 ORDER BY c.id", [$cid]);
     jsonOut(array_map(fn($c) => [
         'id' => (int)$c['id'], 'name' => $c['name'], 'description' => $c['description'],
         'icon' => $c['icon'] ?: null, 'default_slot_duration' => (int)$c['default_slot_duration'],
+        'minBookingSlots' => max((int)$c['min_booking_slots'], 1),
         'activeResourceCount' => (int)$c['active_resource_count'],
     ], $cats));
 }
@@ -52,8 +53,8 @@ if ($path === '/categories') {
 if ($path === '/resources') {
     $catId = qInt('categoryId'); $cid = qInt('companyId') ?: $config['defaults']['company_id'];
     if (!$catId) errOut('Chybí categoryId.');
-    $res = DB::query("SELECT r.id, r.name FROM resources r JOIN categories c ON c.id=r.category_id WHERE r.category_id=? AND c.company_id=? AND r.is_active=1 ORDER BY r.id", [$catId, $cid]);
-    jsonOut(array_map(fn($r) => ['id' => (int)$r['id'], 'name' => $r['name']], $res));
+    $res = DB::query("SELECT r.id,r.name,COALESCE(r.min_booking_slots,c.min_booking_slots,1) AS min_booking_slots FROM resources r JOIN categories c ON c.id=r.category_id WHERE r.category_id=? AND c.company_id=? AND r.is_active=1 ORDER BY r.id", [$catId, $cid]);
+    jsonOut(array_map(fn($r) => ['id' => (int)$r['id'], 'name' => $r['name'], 'minBookingSlots' => max((int)$r['min_booking_slots'], 1)], $res));
 }
 
 // /api/availability
@@ -63,11 +64,11 @@ if ($path === '/availability') {
 
     $dow = Slots::dayOfWeekForPricing($date);
     $bs = getBookingSettings($cid, $config['defaults']['min_advance_minutes']);
-    $cat = DB::queryOne('SELECT default_slot_duration FROM categories WHERE id=? AND company_id=? LIMIT 1', [$catId, $cid]);
+    $cat = DB::queryOne('SELECT default_slot_duration,min_booking_slots FROM categories WHERE id=? AND company_id=? LIMIT 1', [$catId, $cid]);
     if (!$cat) errOut('Kategorie neexistuje.', 404);
 
     $windows = DB::query('SELECT id, resource_id, time_from, time_to, price_per_slot FROM pricing_windows WHERE category_id=? AND day_of_week=? ORDER BY resource_id IS NULL DESC, time_from', [$catId, $dow]);
-    $resources = DB::query("SELECT r.id, r.name FROM resources r JOIN categories c ON c.id=r.category_id WHERE r.category_id=? AND c.company_id=? AND r.is_active=1 ORDER BY r.id", [$catId, $cid]);
+    $resources = DB::query("SELECT r.id,r.name,COALESCE(r.min_booking_slots,c.min_booking_slots,1) AS min_booking_slots FROM resources r JOIN categories c ON c.id=r.category_id WHERE r.category_id=? AND c.company_id=? AND r.is_active=1 ORDER BY r.id", [$catId, $cid]);
 
     $slotMins = (int)($cat['default_slot_duration'] ?? 30);
     $catSlots = []; $resSlots = [];
@@ -83,6 +84,7 @@ if ($path === '/availability') {
         return [
             'resource_id' => $rid,
             'resource_name' => $r['name'],
+            'minBookingSlots' => max((int)($r['min_booking_slots'] ?? 1), 1),
             'slots' => array_merge($catSlots, $resSlots[$rid] ?? [])
         ];
     }, $resources);
@@ -91,7 +93,75 @@ if ($path === '/availability') {
     $rwa = Slots::groupSlotsByResource($rwc, $reserved);
     $ltf = Slots::filterSlotsByLeadTime($rwa, $date, $bs['minAdvanceMinutes']);
 
-    jsonOut(['date' => $date, 'categoryId' => $catId, 'slotMinutes' => $slotMins, 'minAdvanceMinutes' => $bs['minAdvanceMinutes'], 'resources' => $ltf]);
+    jsonOut([
+        'date' => $date,
+        'categoryId' => $catId,
+        'slotMinutes' => $slotMins,
+        'minBookingSlots' => max((int)($cat['min_booking_slots'] ?? 1), 1),
+        'minAdvanceMinutes' => $bs['minAdvanceMinutes'],
+        'resources' => $ltf,
+    ]);
+}
+
+// /api/reservations/cancel-info?token=... — náhled před stornem hosta
+if ($path === '/reservations/cancel-info' && $method === 'GET') {
+    $token = qStr('token');
+    if (!$token || strlen($token) < 32) errOut('Neplatný odkaz pro storno.', 400);
+    $row = DB::queryOne(
+        "SELECT r.id,r.status,r.total_price,r.cancel_token_expires_at,c.name AS category_name,co.name AS company_name
+         FROM reservations r JOIN categories c ON c.id=r.category_id JOIN companies co ON co.id=r.company_id
+         WHERE r.cancel_token_hash=? LIMIT 1",
+        [hash('sha256', $token)]
+    );
+    if (!$row) errOut('Odkaz pro storno není platný.', 404);
+    if (in_array($row['status'], ['cancelled','rejected'], true)) errOut('Rezervace už není aktivní.', 409);
+    if (empty($row['cancel_token_expires_at']) || strtotime($row['cancel_token_expires_at']) <= time()) errOut('Možnost storna už vypršela.', 410);
+    $slots = reservationSlots((int)$row['id']);
+    jsonOut([
+        'reservationId' => (int)$row['id'],
+        'status' => $row['status'],
+        'companyName' => $row['company_name'],
+        'categoryName' => $row['category_name'],
+        'totalPrice' => (float)$row['total_price'],
+        'slots' => $slots,
+    ]);
+}
+
+// /api/reservations/cancel — storno přes jednorázový odkaz z e-mailu
+if ($path === '/reservations/cancel' && $method === 'PATCH') {
+    $b = getJson(); $token = trim((string)($b['token'] ?? ''));
+    if (!$token || strlen($token) < 32) errOut('Neplatný odkaz pro storno.', 400);
+    $row = DB::queryOne(
+        "SELECT r.id,r.company_id,r.user_id,r.status,r.note,r.cancel_token_expires_at,
+                COALESCE(NULLIF(r.customer_email,''),u.email) AS email,
+                COALESCE(NULLIF(r.customer_first_name,''),u.first_name) AS first_name,
+                COALESCE(NULLIF(r.customer_last_name,''),u.last_name) AS last_name,
+                co.name AS company_name
+         FROM reservations r JOIN users u ON u.id=r.user_id JOIN companies co ON co.id=r.company_id
+         WHERE r.cancel_token_hash=? LIMIT 1",
+        [hash('sha256', $token)]
+    );
+    if (!$row) errOut('Odkaz pro storno není platný.', 404);
+    if (in_array($row['status'], ['cancelled','rejected'], true)) errOut('Rezervace už není aktivní.', 409);
+    if (empty($row['cancel_token_expires_at']) || strtotime($row['cancel_token_expires_at']) <= time()) errOut('Možnost storna už vypršela.', 410);
+    $slots = reservationSlots((int)$row['id']);
+    if (!$slots) errOut('Rezervace už nemá aktivní termín.', 409);
+    DB::beginTransaction();
+    try {
+        DB::exec("UPDATE reservations SET status='cancelled',cancelled_by='customer',cancelled_at=NOW(),cancel_token_hash=NULL,note=CONCAT(IFNULL(note,''),'\n[storno zákazníkem]') WHERE id=?", [(int)$row['id']]);
+        DB::exec('DELETE FROM reservation_slots WHERE reservation_id=?', [(int)$row['id']]);
+        DB::commit();
+    } catch (\Throwable $e) { DB::rollback(); errOut('Storno se nepodařilo uložit.', 500); }
+    try {
+        $ref=['date'=>$slots[0]['date'],'slotStarts'=>array_column($slots,'time_start')];
+        $mailer->sendCustomerCancellationConfirmation(
+            ['id'=>(int)$row['company_id'],'name'=>$row['company_name']],
+            ['firstName'=>$row['first_name'],'lastName'=>$row['last_name'],'email'=>$row['email']],
+            $ref,
+            (int)$row['id']
+        );
+    } catch (\Throwable $e) {}
+    jsonOut(['ok'=>true,'reservationId'=>(int)$row['id'],'status'=>'cancelled']);
 }
 
 // /api/reservations POST
@@ -100,7 +170,8 @@ if ($path === '/reservations' && $method === 'POST') {
     $catId = (int)($b['categoryId'] ?? 0); $resId = (int)($b['resourceId'] ?? 0);
     $date = trim($b['date'] ?? ''); $slots = $b['slotStarts'] ?? [];
     $fn = trim($b['firstName'] ?? ''); $ln = trim($b['lastName'] ?? '');
-    $em = trim($b['email'] ?? ''); $ph = trim($b['phone'] ?? '');
+    $em = strtolower(trim($b['email'] ?? '')); $ph = trim($b['phone'] ?? '');
+    $note = trim($b['note'] ?? '');
     $reqCid = (int)($b['companyId'] ?? qInt('companyId')); $fcid = $reqCid ?: $config['defaults']['company_id'];
 
     if (!$catId || !$resId || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) || !is_array($slots) || empty($slots) || !$fn || !$ln || !$em)
@@ -110,8 +181,12 @@ if ($path === '/reservations' && $method === 'POST') {
         $dow = Slots::dayOfWeekForPricing($date);
         $bs = getBookingSettings($fcid, $config['defaults']['min_advance_minutes']);
         $windows = DB::query('SELECT resource_id, time_from, time_to, price_per_slot FROM pricing_windows WHERE category_id=? AND day_of_week=? AND (resource_id IS NULL OR resource_id=?) ORDER BY resource_id IS NULL DESC, time_from', [$catId, $dow, $resId]);
-        $cat = DB::queryOne('SELECT default_slot_duration FROM categories WHERE id=? LIMIT 1', [$catId]);
+        $cat = DB::queryOne('SELECT default_slot_duration,min_booking_slots FROM categories WHERE id=? AND company_id=? LIMIT 1', [$catId, $fcid]);
+        if (!$cat) errOut('Kategorie neexistuje.', 404);
         $sm = (int)($cat['default_slot_duration'] ?? 30);
+        $resourceRules = DB::queryOne('SELECT min_booking_slots FROM resources WHERE id=? AND category_id=? AND is_active=1 LIMIT 1', [$resId, $catId]);
+        if (!$resourceRules) errOut('Vybraný stůl nebo trenér neexistuje.', 404);
+        $minBookingSlots = max((int)($resourceRules['min_booking_slots'] ?? $cat['min_booking_slots'] ?? 1), 1);
 
         $allowed = [];
         foreach ($windows as $w) {
@@ -123,6 +198,10 @@ if ($path === '/reservations' && $method === 'POST') {
         $uss = array_values(array_unique($slots)); sort($uss);
         $sel = array_values(array_filter(array_map(fn($s) => $allowed[$s] ?? null, $uss), fn($x) => $x !== null));
         if (count($sel) !== count($uss)) errOut('Vybrané sloty nejsou povolené.');
+        if (count($sel) < $minBookingSlots) errOut("Minimální délka této rezervace je {$minBookingSlots} bloků.");
+        for ($i=1; $i<count($sel); $i++) {
+            if ($sel[$i-1]['time_end'] !== $sel[$i]['time_start']) errOut('Vybrané bloky musí bezprostředně navazovat.');
+        }
 
         foreach ($uss as $s) {
             if (!Slots::isSlotBookableWithLeadTime($date, $s, $bs['minAdvanceMinutes']))
@@ -144,12 +223,17 @@ if ($path === '/reservations' && $method === 'POST') {
         $conflicts = DB::query("SELECT time_start FROM reservation_slots WHERE resource_id=? AND date=? AND time_start IN ($inPlaceholders)", array_merge([$resId, $date], $timeList));
         if (!empty($conflicts)) { DB::rollback(); errOut('Některé vybrané časy už byly zarezervovány.'); }
 
-        $reservationId = DB::insert("INSERT INTO reservations (company_id,user_id,category_id,total_price,status,note) VALUES (?,?,?,?,?,?)", [$fcid, $uid, $catId, $tp, 'pending', $note ?: null]);
+        $cancelToken = bin2hex(random_bytes(32));
+        $cancelUntil = $date.' '.$sel[0]['time_start'];
+        $reservationId = DB::insert(
+            "INSERT INTO reservations (company_id,user_id,customer_first_name,customer_last_name,customer_email,customer_phone,category_id,total_price,status,booking_type,note,cancel_token_hash,cancel_token_expires_at) VALUES (?,?,?,?,?,?,?,?,?,'customer',?,?,?)",
+            [$fcid, $uid, $fn, $ln, $em, $ph ?: null, $catId, $tp, 'pending', $note ?: null, hash('sha256',$cancelToken), $cancelUntil]
+        );
         $pps = $tp / count($sel);
 
         foreach ($sel as $slot) {
             $ss = $slot['time_start']; $so = DateTime::createFromFormat('H:i:s', $ss);
-            $et = $ss; if ($so) { $so->modify('+30 minutes'); $et = $so->format('H:i:s'); }
+            $et = $slot['time_end']; if ($so && !$et) { $so->modify("+{$sm} minutes"); $et = $so->format('H:i:s'); }
             DB::exec('INSERT INTO reservation_slots (reservation_id,resource_id,date,time_start,time_end,price) VALUES (?,?,?,?,?,?)', [$reservationId, $resId, $date, $ss, $et, $pps]);
         }
 
@@ -160,7 +244,7 @@ if ($path === '/reservations' && $method === 'POST') {
             $company = DB::queryOne('SELECT id, name FROM companies WHERE id=? LIMIT 1', [$fcid]);
             if ($company) {
                 $admins = DB::query("SELECT email, first_name, last_name FROM users WHERE company_id=? AND role='admin' AND notify_emails=1", [$fcid]);
-                $resInfo = ['date' => $date, 'slotStarts' => $uss, 'totalPrice' => $tp, 'firstName' => $fn, 'lastName' => $ln, 'email' => $em, 'phone' => $ph, 'note' => $note];
+                $resInfo = ['date' => $date, 'slotStarts' => $uss, 'slotMinutes'=>$sm, 'totalPrice' => $tp, 'firstName' => $fn, 'lastName' => $ln, 'email' => $em, 'phone' => $ph, 'note' => $note, 'cancelUrl'=>appUrl($config).'/?cancelToken='.rawurlencode($cancelToken)];
                 $custInfo = ['firstName' => $fn, 'lastName' => $ln, 'email' => $em];
                 $mailer->sendAdminNotification($company, $admins, $resInfo, $reservationId);
                 $mailer->sendCustomerSummary($company, $custInfo, $resInfo, $reservationId);
