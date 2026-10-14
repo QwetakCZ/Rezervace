@@ -2,6 +2,7 @@
 <html lang="cs">
   <head>
     <meta charset="UTF-8" />
+    <meta name="referrer" content="no-referrer" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script>
       (() => {
@@ -15,6 +16,31 @@
         const base = document.createElement("base");
         base.href = basePath || "/";
         document.head.appendChild(base);
+
+        if (window.self !== window.top) {
+          document.documentElement.classList.add("is-embedded");
+        }
+
+        const params = new URLSearchParams(window.location.search);
+        const isPublicReservation = !pathname.includes("/admin") && !params.has("cancelToken") && !params.has("adminActionToken");
+        if (!isPublicReservation) return;
+
+        document.documentElement.classList.add("theme-loading");
+        const companyId = params.get("companyId") || "2";
+        try {
+          const cached = JSON.parse(
+            window.localStorage.getItem(`rezervace_public_theme_v1:${companyId}`) || "null"
+          );
+          if (!cached?.variables || !cached?.mode) return;
+          Object.entries(cached.variables).forEach(([key, value]) => {
+            document.documentElement.style.setProperty(key, value);
+          });
+          document.documentElement.dataset.themeMode = cached.mode;
+          document.documentElement.style.colorScheme = cached.mode;
+          document.documentElement.classList.remove("theme-loading");
+        } catch (_error) {
+          // Bez cache zůstane obsah skrytý jen do načtení nastavení klubu z API.
+        }
       })();
     </script>
     <title>Rezervace TT</title>

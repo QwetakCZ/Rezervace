@@ -68,6 +68,9 @@ CREATE TABLE `company_booking_settings` (
   `sms_enabled` tinyint(1) NOT NULL DEFAULT 0,
   `sms_api_key_encrypted` text COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `sms_confirmation_template` text COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `sms_admin_notification_enabled` tinyint(1) NOT NULL DEFAULT 0,
+  `sms_admin_notification_template` text COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `sms_admin_recipient_ids` text COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`company_id`),
   FOREIGN KEY (`company_id`) REFERENCES `companies` (`id`) ON DELETE CASCADE
@@ -228,3 +231,22 @@ INSERT INTO `pricing_windows` (`category_id`, `resource_id`, `day_of_week`, `tim
 (1, NULL, 7, '12:00:00', '14:00:00', 50.00),
 (1, NULL, 7, '14:00:00', '20:00:00', 60.00),
 (1, NULL, 7, '20:00:00', '21:30:00', 40.00);
+
+-- Jednorázové tokeny pro bezpečnou aktivaci hráčského účtu a obnovu hesla.
+CREATE TABLE IF NOT EXISTS `player_account_tokens` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `company_id` int(11) NOT NULL,
+  `user_id` int(11) NOT NULL,
+  `purpose` enum('activation','password_reset') NOT NULL,
+  `token_hash` char(64) NOT NULL,
+  `pending_data` text DEFAULT NULL,
+  `expires_at` datetime NOT NULL,
+  `used_at` datetime DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `player_account_token_hash_unique` (`token_hash`),
+  KEY `player_account_user_purpose_idx` (`user_id`,`purpose`,`created_at`),
+  KEY `player_account_expiry_idx` (`expires_at`),
+  CONSTRAINT `fk_player_account_company` FOREIGN KEY (`company_id`) REFERENCES `companies` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_player_account_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

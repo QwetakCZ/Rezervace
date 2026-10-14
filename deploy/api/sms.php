@@ -9,6 +9,7 @@ class SmsManagerClient
 {
     private const ENDPOINT = 'https://api.smsmngr.com/v2/message';
     public const DEFAULT_CONFIRMATION_TEMPLATE = 'Rezervace v {{companyName}} je potvrzena: {{date}} {{time}}, {{resource}}. Dekujeme.';
+    public const DEFAULT_ADMIN_NOTIFICATION_TEMPLATE = 'Nova rezervace v {{companyName}}: {{firstName}} {{lastName}}, {{weekday}} {{date}} {{time}}, {{resource}}. Ceka na schvaleni.';
 
     private string $encryptionKey;
 
@@ -115,7 +116,7 @@ class SmsManagerClient
     ): array {
         $normalizedPhone = self::normalizePhone($phone);
         if ($normalizedPhone === '') {
-            $result = ['status' => 'skipped', 'error' => 'Zákazník nemá platné telefonní číslo.'];
+            $result = ['status' => 'skipped', 'error' => 'Příjemce nemá platné telefonní číslo.'];
             $this->log($companyId, $reservationId, $phone, $type, $message, $result);
             return $result;
         }
@@ -180,6 +181,58 @@ class SmsManagerClient
         ];
         $this->log($companyId, $reservationId, $normalizedPhone, $type, $message, $result);
         return $result;
+    }
+
+    /** Nová zákaznická rezervace: nezávislé na potvrzovací SMS a e-mailových preferencích. */
+    public function sendAdminNewReservation(int $companyId, int $reservationId): array
+    {
+        $settings = DB::queryOne('SELECT sms_admin_notification_enabled,sms_admin_notification_template,sms_admin_recipient_ids,sms_api_key_encrypted FROM company_booking_settings WHERE company_id=?', [$companyId]);
+        if (empty($settings['sms_admin_notification_enabled']) || empty($settings['sms_api_key_encrypted'])) return [];
+        $ids = json_decode((string)($settings['sms_admin_recipient_ids'] ?? ''), true);
+        if (!is_array($ids) || !$ids) return [];
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids), fn($id) => $id > 0)));
+        if (!$ids) return [];
+        $reservation = DB::queryOne("SELECT r.customer_first_name,r.customer_last_name,r.customer_email,r.customer_phone,r.total_price,c.name AS company_name FROM reservations r JOIN companies c ON c.id=r.company_id WHERE r.id=? AND r.company_id=? AND r.booking_type='customer' AND r.status IN ('pending','confirmed')", [$reservationId, $companyId]);
+        if (!$reservation) return [];
+        $slots = DB::query('SELECT s.date,s.time_start,s.time_end,r.name AS resource_name FROM reservation_slots s JOIN resources r ON r.id=s.resource_id WHERE s.reservation_id=? ORDER BY s.date,s.time_start', [$reservationId]);
+        if (!$slots) return [];
+        $date = (string)$slots[0]['date'];
+        $dateObject = DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+        $times = Mailer::timeVariables(['detailSlots' => $slots]);
+        $template = trim((string)($settings['sms_admin_notification_template'] ?? '')) ?: self::DEFAULT_ADMIN_NOTIFICATION_TEMPLATE;
+        $message = self::renderTemplate($template, [
+            '{{companyName}}' => (string)$reservation['company_name'],
+            '{{firstName}}' => (string)$reservation['customer_first_name'],
+            '{{lastName}}' => (string)$reservation['customer_last_name'],
+            '{{email}}' => (string)$reservation['customer_email'],
+            '{{phone}}' => (string)$reservation['customer_phone'],
+            '{{date}}' => $dateObject ? $dateObject->format('d.m.Y') : $date,
+            '{{weekday}}' => Mailer::weekdayName($date),
+            '{{time}}' => $times['time'],
+            '{{timeRange}}' => $times['timeRange'],
+            '{{timeFrom}}' => $times['timeFrom'],
+            '{{timeTo}}' => $times['timeTo'],
+            '{{resource}}' => implode(', ', array_unique(array_column($slots, 'resource_name'))),
+            '{{reservationId}}' => (string)$reservationId,
+            '{{totalPrice}}' => number_format((float)$reservation['total_price'], 0, ',', ' '),
+        ]);
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $admins = DB::query("SELECT id,phone FROM users WHERE company_id=? AND role='admin' AND id IN ($placeholders) ORDER BY id", array_merge([$companyId], $ids));
+        $results = []; $sentPhones = [];
+        foreach ($admins as $admin) {
+            $phone = (string)($admin['phone'] ?? '');
+            $normalized = self::normalizePhone($phone);
+            if ($normalized !== '' && isset($sentPhones[$normalized])) continue;
+            if ($normalized !== '') $sentPhones[$normalized] = true;
+            try {
+                $result = $this->send($companyId, $reservationId, (string)$settings['sms_api_key_encrypted'], $phone, $message, 'admin_new_reservation');
+            } catch (Throwable $e) {
+                $result = ['status' => 'failed', 'error' => 'SMS správci se nepodařilo odeslat.'];
+                $this->log($companyId, $reservationId, $phone, 'admin_new_reservation', $message, $result);
+            }
+            $results[] = ['adminId' => (int)$admin['id']] + $result;
+        }
+        return $results;
     }
 
     private function log(

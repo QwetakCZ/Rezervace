@@ -57,6 +57,24 @@ function getCompanyIdFromUrl() {
 // Zjistit company ID (z URL nebo fallback)
 const detectedCompanyId = getCompanyIdFromUrl();
 
+// Starší e-maily neobsahovaly companyId. Klub určuje ověřený účet z API,
+// nikoli případný chybný parametr v odkazu. Reload načte i správná data a téma.
+export function finishPlayerAccountAction(user, tokenParameter) {
+  const companyId = Number(user?.companyId);
+  if (!Number.isInteger(companyId) || companyId <= 0) {
+    throw new Error("Nepodařilo se určit klub hráčského účtu.");
+  }
+  const url = new URL(window.location.href);
+  url.searchParams.set("companyId", String(companyId));
+  url.searchParams.delete(tokenParameter);
+  if (detectedCompanyId !== companyId) {
+    window.location.replace(url.href);
+    return true;
+  }
+  window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  return false;
+}
+
 function getAdminToken() {
   return localStorage.getItem(ADMIN_TOKEN_KEY) || "";
 }
@@ -113,7 +131,10 @@ async function request(path, options = {}) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(data.error || `API chyba (${response.status})`);
+    const error = new Error(data.error || `API chyba (${response.status})`);
+    error.status = response.status;
+    error.deliveryStarted = data.deliveryStarted;
+    throw error;
   }
 
   return data;
@@ -162,10 +183,15 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payloadWithCompany),
+      playerAuth: Boolean(getPlayerToken()),
     });
   },
   getCancellationInfo: (token) =>
     request(`/api/reservations/cancel-info?token=${encodeURIComponent(token)}`),
+  getReservationActionInfo: (token) => request(`/api/reservation-action-info?token=${encodeURIComponent(token)}`),
+  performReservationAction: (token) => request('/api/reservation-action', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
+  }),
   cancelReservationByToken: (token) =>
     request('/api/reservations/cancel', {
       method: 'PATCH',
@@ -199,7 +225,38 @@ export const api = {
 
     return data;
   },
+  activatePlayer: async (token) => {
+    const data = await request("/api/player/activate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    if (data?.token) setPlayerToken(data.token);
+    return data;
+  },
+  requestPlayerPasswordReset: (email, companyId = detectedCompanyId) =>
+    request("/api/player/password-reset/request", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(companyId ? { email, companyId } : { email }),
+    }),
+  confirmPlayerPasswordReset: async (token, password) => {
+    const data = await request("/api/player/password-reset/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, password }),
+    });
+    if (data?.token) setPlayerToken(data.token);
+    return data;
+  },
   getPlayerProfile: () => request("/api/player/me", { playerAuth: true }),
+  updatePlayerProfile: (payload) =>
+    request("/api/player/me", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      playerAuth: true,
+    }),
   getPlayerReservations: () => request('/api/player/reservations', { playerAuth: true }),
   cancelPlayerReservation: (reservationId) =>
     request(`/api/player/reservations/${reservationId}/cancel`, {
@@ -325,6 +382,10 @@ export const api = {
       body: JSON.stringify(payload),
       auth: true,
     }),
+  getDirectory: () => request('/api/admin/directory', { auth: true }),
+  sendDirectoryEmail: (payload) => request('/api/admin/directory/email', {
+    method: 'POST', auth: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  }),
   getAdminUsers: (companyId = "") => {
     const params = new URLSearchParams();
     if (companyId) {

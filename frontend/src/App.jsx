@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "./api";
+import { api, finishPlayerAccountAction } from "./api";
+import ContactDirectory from "./ContactDirectory";
 import {
   Trophy,
   Calendar,
@@ -47,6 +48,7 @@ const DEFAULT_CLUB_THEME = Object.freeze({
   backgroundColor: "#06070c",
   textColor: "#f4f5f7",
 });
+const PUBLIC_THEME_CACHE_PREFIX = "rezervace_public_theme_v1:";
 
 const TEMPLATE_VARS_HELP = [
   { var: "{{firstName}}", desc: "Křestní jméno zákazníka" },
@@ -57,6 +59,9 @@ const TEMPLATE_VARS_HELP = [
   { var: "{{date}}", desc: "Datum rezervace" },
   { var: "{{weekday}}", desc: "Den v týdnu (např. čtvrtek)" },
   { var: "{{slots}}", desc: "Seznam časů (např. 08:00, 08:30)" },
+  { var: "{{time}}", desc: "Čas rezervace jako rozsah (např. 09:00 - 10:30)" },
+  { var: "{{timeFrom}}", desc: "Začátek rezervace (např. 09:00)" },
+  { var: "{{timeTo}}", desc: "Konec rezervace (např. 10:30)" },
   { var: "{{slotCount}}", desc: "Počet slotů" },
   { var: "{{totalPrice}}", desc: "Celková cena" },
   { var: "{{note}}", desc: "Poznámka zákazníka" },
@@ -66,8 +71,12 @@ const TEMPLATE_VARS_HELP = [
 
 const DEFAULT_SMS_CONFIRMATION_TEMPLATE =
   "Rezervace v {{companyName}} je potvrzena: {{date}} {{time}}, {{resource}}. Dekujeme.";
+const DEFAULT_SMS_ADMIN_NOTIFICATION_TEMPLATE =
+  "Nova rezervace v {{companyName}}: {{firstName}} {{lastName}}, {{weekday}} {{date}} {{time}}, {{resource}}. Ceka na schvaleni.";
 
 function defaultTemplateSubject(type) {
+  if (type === "admin_customer_cancellation") return "Zákazník stornoval rezervaci – {{companyName}}";
+  if (type === "customer_cancellation") return "Storno rezervace potvrzeno – {{companyName}}";
   if (type === "rejection") return "Rezervace zamítnuta – {{companyName}}";
   if (type === "cancellation") return "Rezervace stornována – {{companyName}}";
   return type === "confirmation"
@@ -98,6 +107,10 @@ function extractBodyHtml(fullHtml) {
 }
 
 function defaultTemplateBody(type) {
+  if (["customer_cancellation", "admin_customer_cancellation"].includes(type)) {
+    const isAdmin = type === "admin_customer_cancellation";
+    return `<div class="card"><h2>${isAdmin ? "Zákazník stornoval rezervaci" : "Storno potvrzeno"}</h2><p>${isAdmin ? "{{firstName}} {{lastName}} ({{email}}) zrušil rezervaci v {{companyName}}." : "Vaše rezervace v {{companyName}} byla zrušena."}</p><table><tr><th>Datum</th><td>{{weekday}} {{date}}</td></tr><tr><th>Čas</th><td>{{time}}</td></tr></table><p>Termín je opět volný.</p><div class="footer">Rezervační systém • {{companyName}}</div></div>`;
+  }
   if (type === "rejection") {
     return `<div class="card">\n<h2>Rezervace nebyla schválena</h2>\n<p>Vaše rezervace v <strong>{{companyName}}</strong> byla zamítnuta.</p>\n<hr style="border:0;border-top:1px solid #eee;margin:12px 0">\n<table>\n<tr><th>Datum</th><td>{{date}}</td></tr>\n<tr><th>Časy</th><td>{{slots}}</td></tr>\n</table>\n<div class="note">Důvod: {{reason}}</div>\n<div class="footer">Rezervační systém • {{companyName}}</div>\n</div>`;
   }
@@ -105,7 +118,7 @@ function defaultTemplateBody(type) {
     return `<div class=\"card\">\n<h2>❌ Rezervace stornována</h2>\n<p>Vaše rezervace v <strong>{{companyName}}</strong> byla <strong>zrušena</strong> administrátorem.</p>\n<hr style=\"border:0;border-top:1px solid #eee;margin:12px 0\">\n<table>\n<tr><th>Datum</th><td>{{date}}</td></tr>\n<tr><th>Časy</th><td>{{slots}}</td></tr>\n</table>\n<div class=\"note\">📝 Důvod: {{reason}}</div>\n<p style=\"margin-top:16px;color:#e11d48;font-weight:600\">Pokud máte dotazy, kontaktujte nás.</p>\n<div class=\"footer\">Rezervační systém • {{companyName}}</div>\n</div>`;
   }
   if (type === "confirmation") {
-    return `<div class="card">\n<h2>✅ Rezervace potvrzena</h2>\n<p>Vaše rezervace v <strong>{{companyName}}</strong> byla <strong>potvrzena</strong> administrátorem.</p>\n<hr style="border:0;border-top:1px solid #eee;margin:12px 0">\n<table>\n<tr><th>Datum</th><td>{{date}}</td></tr>\n<tr><th>Časy</th><td>{{slots}}</td></tr>\n</table>\n<p style="margin-top:16px;color:#10b981;font-weight:600">Těšíme se na Vás! 🏓</p>\n<div class="footer">Rezervační systém • {{companyName}}</div>\n</div>`;
+    return `<div class="card">\n<h2>✅ Rezervace potvrzena</h2>\n<p>Vaše rezervace v <strong>{{companyName}}</strong> byla <strong>potvrzena</strong> administrátorem.</p>\n<hr style="border:0;border-top:1px solid #eee;margin:12px 0">\n<table>\n<tr><th>Datum</th><td>{{weekday}} {{date}}</td></tr>\n<tr><th>Čas</th><td>{{time}}</td></tr>\n</table>\n<p style="margin-top:16px;color:#10b981;font-weight:600">Těšíme se na Vás! 🏓</p>\n<div class="footer">Rezervační systém • {{companyName}}</div>\n</div>`;
   }
   return `<div class="card">\n<h2>🏓 Rezervace přijata</h2>\n<p>Děkujeme, <strong>{{firstName}}</strong>! Vaše rezervace v <strong>{{companyName}}</strong> byla přijata.</p>\n<hr style="border:0;border-top:1px solid #eee;margin:12px 0">\n<table>\n<tr><th>Datum</th><td>{{date}}</td></tr>\n<tr><th>Časy</th><td>{{slots}}</td></tr>\n<tr><th>Počet bloků</th><td>{{slotCount}}</td></tr>\n<tr><th>Cena celkem</th><td class="price">{{totalPrice}} Kč</td></tr>\n</table>\n<div class="note">⏳ Po schválení administrátorem Vám přijde potvrzovací email.</div>\n<p style="color:#888;font-size:13px">📝 Vaše poznámka: {{note}}</p>\n<p style="margin-top:18px"><a href="{{cancelUrl}}" style="display:inline-block;padding:10px 16px;border-radius:8px;background:#e11d48;color:#fff;text-decoration:none;font-weight:700">Zrušit rezervaci</a></p>\n<div class="footer">Rezervační systém • {{companyName}}</div>\n</div>`;
 }
@@ -276,6 +289,25 @@ function applyThemeToDocument(theme) {
   Object.entries(variables).forEach(([key, value]) => {
     root.style.setProperty(key, value);
   });
+  const mode = isLightColor(normalizeClubTheme(theme).backgroundColor) ? "light" : "dark";
+  root.dataset.themeMode = mode;
+  root.style.colorScheme = mode;
+  root.classList.remove("theme-loading");
+  return { variables, mode };
+}
+
+function cachePublicTheme(companyId, theme) {
+  if (!companyId) return;
+  try {
+    const variables = buildThemeVariables(theme);
+    const mode = isLightColor(normalizeClubTheme(theme).backgroundColor) ? "light" : "dark";
+    window.localStorage.setItem(
+      `${PUBLIC_THEME_CACHE_PREFIX}${companyId}`,
+      JSON.stringify({ variables, mode })
+    );
+  } catch (_error) {
+    // Soukromý režim nebo blokované úložiště nesmí zabránit vykreslení aplikace.
+  }
 }
 
 function detectThemePreset(theme) {
@@ -420,6 +452,34 @@ function minimumWindowForSlot(resource, clickedSlot, minimumSlots) {
   return [];
 }
 
+function ReservationActionPage({ token }) {
+  const [info, setInfo] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api.getReservationActionInfo(token).then(setInfo).catch((err) => setError(err.message)).finally(() => setLoading(false));
+  }, [token]);
+  async function confirmAction() {
+    setLoading(true); setError("");
+    try {
+      await api.performReservationAction(token);
+      setMessage(info.action === "approve" ? "Rezervace byla schválena. Potvrzení zákazníkovi bylo předáno k odeslání." : "Rezervace byla stornována a termín je opět volný.");
+      setInfo(null);
+    } catch (err) { setError(err.message); }
+    finally { setLoading(false); }
+  }
+  return <main className="container"><section className="wizardShell">
+    <h1 className="pageTitle">Vyřízení rezervace</h1>
+    {loading && <p className="muted">Ověřuji odkaz…</p>}
+    {info && <div className="summaryCard"><h2>{info.companyName}</h2><p>{info.customerName} · {info.categoryName}</p>
+      <p>{formatReservationTerm(info.slots)}</p>
+      <p className="muted">{info.action === "approve" ? "Po schválení zákazníkovi odešleme potvrzení rezervace." : "Stornem se termín uvolní ostatním zákazníkům."}</p>
+      <button className={info.action === "approve" ? "primaryBtn" : "ghostBtn"} type="button" disabled={loading} onClick={confirmAction}>{info.action === "approve" ? "Potvrdit schválení" : "Potvrdit storno"}</button></div>}
+    {message && <p className="status ok">{message}</p>}{error && <p className="status error">{error}</p>}
+  </section></main>;
+}
+
 function CancellationPage({ token }) {
   const [info, setInfo] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -537,8 +597,44 @@ function formatReservationCount(count) {
   return `${value} ${noun}`;
 }
 
+function formatBlockCount(count) {
+  const value = Number(count) || 0;
+  const noun = value === 1 ? "blok" : value >= 2 && value <= 4 ? "bloky" : "bloků";
+  return `${value} ${noun}`;
+}
+
 function formatTimeShort(value) {
   return String(value || "").slice(0, 5);
+}
+
+function timeToMinutes(value) {
+  const [hours, minutes] = formatTimeShort(value).split(":").map(Number);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) {
+    return null;
+  }
+  return hours * 60 + minutes;
+}
+
+function getIsoWeekday(dateString) {
+  const parsed = parseDateInput(dateString);
+  if (!parsed) return null;
+  const day = parsed.getDay();
+  return day === 0 ? 7 : day;
+}
+
+function getWeekdayLabel(dayOfWeek) {
+  return weekdayOptions.find((day) => Number(day.value) === Number(dayOfWeek))?.label || "zvolený den";
+}
+
+function humanizeRecurringReservationError(message) {
+  const raw = String(message || "Opakované rezervace se nepodařilo vytvořit.");
+  return raw.replace(
+    /(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):\d{2}/g,
+    (_match, year, month, day, hours, minutes) => {
+      const dateKey = `${year}-${month}-${day}`;
+      return `${getWeekdayLabel(getIsoWeekday(dateKey)).toLowerCase()} ${Number(day)}. ${Number(month)}. ${year} v ${hours}:${minutes}`;
+    }
+  );
 }
 
 function addMinutesToTime(timeStr, minutes) {
@@ -572,6 +668,33 @@ function formatReservationTerm(slots) {
   }
 
   return `${firstDateLabel} ${from} -> ${lastDateLabel} ${to}`;
+}
+
+function summarizeReservationSlots(slots) {
+  const byDate = {};
+
+  for (const slot of slots || []) {
+    const dateKey = extractDateKey(slot.date);
+    if (!dateKey) continue;
+    if (!byDate[dateKey]) byDate[dateKey] = [];
+    byDate[dateKey].push(slot);
+  }
+
+  return Object.entries(byDate)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([dateKey, dateSlots]) => {
+      const sorted = [...dateSlots].sort((a, b) =>
+        String(a.time_start || "").localeCompare(String(b.time_start || ""))
+      );
+      return {
+        dateKey,
+        start: formatTimeShort(sorted[0]?.time_start),
+        end: formatTimeShort(sorted[sorted.length - 1]?.time_end),
+        resources: [...new Set(sorted.map((slot) => slot.resource_name).filter(Boolean))]
+          .sort((left, right) => String(left).localeCompare(String(right), "cs", { numeric: true })),
+        slotCount: sorted.length,
+      };
+    });
 }
 
 function getCalendarMonthRange(monthKey) {
@@ -633,7 +756,8 @@ function buildReservationCalendarEvents(reservations) {
 
     for (const [dateKey, slots] of Object.entries(slotsByDate)) {
       const sortedSlots = [...slots].sort((a, b) => String(a.time_start).localeCompare(String(b.time_start)));
-      const resources = [...new Set(sortedSlots.map((slot) => slot.resource_name).filter(Boolean))];
+      const resources = [...new Set(sortedSlots.map((slot) => slot.resource_name).filter(Boolean))]
+        .sort((left, right) => String(left).localeCompare(String(right), "cs", { numeric: true }));
       const customerName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
       const title = reservation.booking_type === "internal"
         ? (reservation.label || "Interní blokace")
@@ -726,9 +850,11 @@ function ReservationPage() {
   const [paymentMethod, setPaymentMethod] = useState("onsite");
   const [customerMode, setCustomerMode] = useState("guest");
   const [playerAuthMode, setPlayerAuthMode] = useState("login");
+  const [playerAccountOpen, setPlayerAccountOpen] = useState(false);
   const [playerProfile, setPlayerProfile] = useState(null);
   const [playerAuthLoading, setPlayerAuthLoading] = useState(false);
   const [playerAuthError, setPlayerAuthError] = useState("");
+  const [playerAuthStatus, setPlayerAuthStatus] = useState("");
   const [playerReservations, setPlayerReservations] = useState([]);
   const [playerReservationsLoading, setPlayerReservationsLoading] = useState(false);
   const [playerLoginForm, setPlayerLoginForm] = useState({ email: "", password: "" });
@@ -738,7 +864,14 @@ function ReservationPage() {
     email: "",
     phone: "",
     password: "",
+    passwordConfirm: "",
   });
+  const [playerResetEmail, setPlayerResetEmail] = useState("");
+  const [playerResetForm, setPlayerResetForm] = useState({ password: "", passwordConfirm: "" });
+  const [playerResetToken] = useState(() => new URLSearchParams(window.location.search).get("resetPlayerToken") || "");
+  const [playerActivationToken] = useState(() => new URLSearchParams(window.location.search).get("activatePlayerToken") || "");
+  const playerActivationStartedRef = useRef(false);
+  const [playerProfileForm, setPlayerProfileForm] = useState({ firstName: "", lastName: "", phone: "" });
 
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -803,6 +936,11 @@ function ReservationPage() {
     setLastName(String(normalizedUser?.lastName || ""));
     setEmail(String(normalizedUser?.email || ""));
     setPhone(String(normalizedUser?.phone || ""));
+    setPlayerProfileForm({
+      firstName: String(normalizedUser?.firstName || ""),
+      lastName: String(normalizedUser?.lastName || ""),
+      phone: String(normalizedUser?.phone || ""),
+    });
     setCustomerMode("login");
     setPlayerAuthError("");
   }
@@ -817,7 +955,9 @@ function ReservationPage() {
           return;
         }
         setClubInfo(company || null);
-        applyThemeToDocument(company || DEFAULT_CLUB_THEME);
+        const theme = company || DEFAULT_CLUB_THEME;
+        applyThemeToDocument(theme);
+        cachePublicTheme(api.getCompanyId() || company?.id || 2, theme);
       })
       .catch(() => {
         if (!active) {
@@ -825,6 +965,7 @@ function ReservationPage() {
         }
         setClubInfo(null);
         applyThemeToDocument(DEFAULT_CLUB_THEME);
+        cachePublicTheme(api.getCompanyId() || 2, DEFAULT_CLUB_THEME);
       });
 
     return () => {
@@ -845,7 +986,30 @@ function ReservationPage() {
   }, []);
 
   useEffect(() => {
-    if (!api.getPlayerToken()) {
+    if (playerResetToken) {
+      setPlayerAccountOpen(true);
+      setPlayerAuthMode("resetConfirm");
+    }
+    if (!playerActivationToken || playerActivationStartedRef.current) return;
+    playerActivationStartedRef.current = true;
+
+    setPlayerAccountOpen(true);
+    setPlayerAuthLoading(true);
+    setPlayerAuthError("");
+    api
+      .activatePlayer(playerActivationToken)
+      .then((data) => {
+        if (finishPlayerAccountAction(data.user, "activatePlayerToken")) return;
+        applyPlayerProfile(data.user);
+        setPlayerAuthStatus(data.message || "Účet je aktivní a jste přihlášeni.");
+        loadPlayerReservations();
+      })
+      .catch((err) => setPlayerAuthError(err.message))
+      .finally(() => setPlayerAuthLoading(false));
+  }, [playerActivationToken, playerResetToken]);
+
+  useEffect(() => {
+    if (playerActivationToken || !api.getPlayerToken()) {
       return;
     }
 
@@ -863,7 +1027,7 @@ function ReservationPage() {
         setPlayerProfile(null);
       })
       .finally(() => setPlayerAuthLoading(false));
-  }, []);
+  }, [playerActivationToken]);
 
   async function loadAvailability(targetCategoryId, targetDate) {
     if (!targetCategoryId) {
@@ -1031,13 +1195,16 @@ function ReservationPage() {
 
       setStatus(
         response.status === "pending"
-          ? `Rezervace #${response.reservationId} přijata a čeká na schválení. Celkem ${response.totalPrice} Kč.`
-          : `Rezervace #${response.reservationId} uložena. Celkem ${response.totalPrice} Kč.`
+          ? `Rezervace byla přijata a čeká na schválení. Shrnutí a bezpečný odkaz pro storno jsme poslali na ${email}. Cena celkem: ${response.totalPrice} Kč.`
+          : `Rezervace byla úspěšně uložena. Shrnutí a bezpečný odkaz pro storno jsme poslali na ${email}. Cena celkem: ${response.totalPrice} Kč.`
       );
       setSelectedSlots([]);
       setStep(1);
 
-      await loadAvailability(categoryId, date);
+      await Promise.all([
+        loadAvailability(categoryId, date),
+        playerProfile ? loadPlayerReservations() : Promise.resolve(),
+      ]);
     } catch (err) {
       setError(err.message);
     }
@@ -1047,11 +1214,14 @@ function ReservationPage() {
     event.preventDefault();
     setPlayerAuthLoading(true);
     setPlayerAuthError("");
+    setPlayerAuthStatus("");
 
     try {
       const response = await api.playerLogin(playerLoginForm.email, playerLoginForm.password);
       applyPlayerProfile(response.user);
       await loadPlayerReservations();
+      setPlayerAccountOpen(true);
+      setPlayerAuthStatus("Přihlášení proběhlo úspěšně.");
       setPlayerLoginForm((current) => ({ ...current, password: "" }));
     } catch (err) {
       setPlayerAuthError(err.message);
@@ -1064,18 +1234,77 @@ function ReservationPage() {
     event.preventDefault();
     setPlayerAuthLoading(true);
     setPlayerAuthError("");
+    setPlayerAuthStatus("");
 
     try {
+      if (playerRegisterForm.password !== playerRegisterForm.passwordConfirm) {
+        throw new Error("Zadaná hesla se neshodují.");
+      }
       const response = await api.playerRegister(playerRegisterForm);
-      applyPlayerProfile(response.user);
-      await loadPlayerReservations();
+      setPlayerAuthStatus(response.message);
+      setPlayerAuthMode("login");
+      setPlayerLoginForm((current) => ({ ...current, email: playerRegisterForm.email }));
       setPlayerRegisterForm({
         firstName: "",
         lastName: "",
         email: "",
         phone: "",
         password: "",
+        passwordConfirm: "",
       });
+    } catch (err) {
+      setPlayerAuthError(err.message);
+    } finally {
+      setPlayerAuthLoading(false);
+    }
+  }
+
+  async function handlePlayerResetRequest(event) {
+    event.preventDefault();
+    setPlayerAuthLoading(true);
+    setPlayerAuthError("");
+    setPlayerAuthStatus("");
+    try {
+      const response = await api.requestPlayerPasswordReset(playerResetEmail);
+      setPlayerAuthStatus(response.message);
+    } catch (err) {
+      setPlayerAuthError(err.message);
+    } finally {
+      setPlayerAuthLoading(false);
+    }
+  }
+
+  async function handlePlayerResetConfirm(event) {
+    event.preventDefault();
+    setPlayerAuthLoading(true);
+    setPlayerAuthError("");
+    setPlayerAuthStatus("");
+    try {
+      if (playerResetForm.password !== playerResetForm.passwordConfirm) {
+        throw new Error("Zadaná hesla se neshodují.");
+      }
+      const response = await api.confirmPlayerPasswordReset(playerResetToken, playerResetForm.password);
+      if (finishPlayerAccountAction(response.user, "resetPlayerToken")) return;
+      applyPlayerProfile(response.user);
+      await loadPlayerReservations();
+      setPlayerAuthStatus(response.message);
+      setPlayerResetForm({ password: "", passwordConfirm: "" });
+    } catch (err) {
+      setPlayerAuthError(err.message);
+    } finally {
+      setPlayerAuthLoading(false);
+    }
+  }
+
+  async function handlePlayerProfileSubmit(event) {
+    event.preventDefault();
+    setPlayerAuthLoading(true);
+    setPlayerAuthError("");
+    setPlayerAuthStatus("");
+    try {
+      const response = await api.updatePlayerProfile(playerProfileForm);
+      applyPlayerProfile(response.user);
+      setPlayerAuthStatus("Kontaktní údaje účtu byly uloženy.");
     } catch (err) {
       setPlayerAuthError(err.message);
     } finally {
@@ -1088,12 +1317,101 @@ function ReservationPage() {
     setPlayerProfile(null);
     setCustomerMode("guest");
     setPlayerAuthError("");
+    setPlayerAuthStatus("Byli jste odhlášeni.");
+    setPlayerAuthMode("login");
     setPlayerLoginForm({ email: "", password: "" });
     setFirstName("");
     setLastName("");
     setEmail("");
     setPhone("");
     setPlayerReservations([]);
+  }
+
+  function renderPlayerAuthForms() {
+    if (playerAuthMode === "resetConfirm") {
+      return (
+        <form className="formGrid accountForm" onSubmit={handlePlayerResetConfirm}>
+          <div className="full">
+            <h3 className="accountSectionTitle">Nastavení nového hesla</h3>
+            <p className="muted">Zvolte nové heslo o délce alespoň 8 znaků.</p>
+          </div>
+          <label className="full">
+            Nové heslo
+            <input className="field" type="password" minLength="8" autoComplete="new-password" value={playerResetForm.password} onChange={(event) => setPlayerResetForm((current) => ({ ...current, password: event.target.value }))} required />
+          </label>
+          <label className="full">
+            Nové heslo znovu
+            <input className="field" type="password" minLength="8" autoComplete="new-password" value={playerResetForm.passwordConfirm} onChange={(event) => setPlayerResetForm((current) => ({ ...current, passwordConfirm: event.target.value }))} required />
+          </label>
+          <div className="actionsRight full">
+            <button className="primaryBtn" type="submit" disabled={playerAuthLoading}>{playerAuthLoading ? "Ukládám..." : "Uložit nové heslo"}</button>
+          </div>
+        </form>
+      );
+    }
+
+    return (
+      <>
+        <div className="tabRow tabRow--three">
+          <button type="button" className={`tab ${playerAuthMode === "login" ? "tab--active" : ""}`} onClick={() => { setPlayerAuthMode("login"); setPlayerAuthError(""); }}>Přihlášení</button>
+          <button type="button" className={`tab ${playerAuthMode === "register" ? "tab--active" : ""}`} onClick={() => { setPlayerAuthMode("register"); setPlayerAuthError(""); }}>Registrace</button>
+          <button type="button" className={`tab ${playerAuthMode === "reset" ? "tab--active" : ""}`} onClick={() => { setPlayerAuthMode("reset"); setPlayerAuthError(""); }}>Obnova hesla</button>
+        </div>
+
+        {playerAuthMode === "login" && (
+          <form className="formGrid accountForm" onSubmit={handlePlayerLoginSubmit}>
+            <label className="full">E-mail
+              <input className="field" type="email" autoComplete="email" value={playerLoginForm.email} onChange={(event) => setPlayerLoginForm((current) => ({ ...current, email: event.target.value }))} required />
+            </label>
+            <label className="full">Heslo
+              <input className="field" type="password" autoComplete="current-password" value={playerLoginForm.password} onChange={(event) => setPlayerLoginForm((current) => ({ ...current, password: event.target.value }))} required />
+            </label>
+            <div className="panelActions panelActions--between full accountActions">
+              <button type="button" className="textBtn" onClick={() => setPlayerAuthMode("reset")}>Zapomněli jste heslo?</button>
+              <button className="primaryBtn" type="submit" disabled={playerAuthLoading}>{playerAuthLoading ? "Přihlašuji..." : "Přihlásit se"}</button>
+            </div>
+          </form>
+        )}
+
+        {playerAuthMode === "register" && (
+          <form className="formGrid accountForm" onSubmit={handlePlayerRegisterSubmit}>
+            <label>Jméno
+              <input className="field" autoComplete="given-name" maxLength="100" value={playerRegisterForm.firstName} onChange={(event) => setPlayerRegisterForm((current) => ({ ...current, firstName: event.target.value }))} required />
+            </label>
+            <label>Příjmení
+              <input className="field" autoComplete="family-name" maxLength="100" value={playerRegisterForm.lastName} onChange={(event) => setPlayerRegisterForm((current) => ({ ...current, lastName: event.target.value }))} required />
+            </label>
+            <label className="full">E-mail
+              <input className="field" type="email" autoComplete="email" value={playerRegisterForm.email} onChange={(event) => setPlayerRegisterForm((current) => ({ ...current, email: event.target.value }))} required />
+            </label>
+            <label className="full">Telefon
+              <input className="field" type="tel" autoComplete="tel" maxLength="50" value={playerRegisterForm.phone} onChange={(event) => setPlayerRegisterForm((current) => ({ ...current, phone: event.target.value }))} />
+            </label>
+            <label>Heslo
+              <input className="field" type="password" minLength="8" autoComplete="new-password" value={playerRegisterForm.password} onChange={(event) => setPlayerRegisterForm((current) => ({ ...current, password: event.target.value }))} required />
+            </label>
+            <label>Heslo znovu
+              <input className="field" type="password" minLength="8" autoComplete="new-password" value={playerRegisterForm.passwordConfirm} onChange={(event) => setPlayerRegisterForm((current) => ({ ...current, passwordConfirm: event.target.value }))} required />
+            </label>
+            <p className="muted full accountHint">Po registraci vám pošleme ověřovací odkaz. Heslo musí mít alespoň 8 znaků.</p>
+            <div className="actionsRight full"><button className="primaryBtn" type="submit" disabled={playerAuthLoading}>{playerAuthLoading ? "Odesílám..." : "Vytvořit účet"}</button></div>
+          </form>
+        )}
+
+        {playerAuthMode === "reset" && (
+          <form className="formGrid accountForm" onSubmit={handlePlayerResetRequest}>
+            <div className="full"><h3 className="accountSectionTitle">Obnova hesla</h3><p className="muted">Pošleme vám bezpečný odkaz pro nastavení nového hesla.</p></div>
+            <label className="full">E-mail
+              <input className="field" type="email" autoComplete="email" value={playerResetEmail} onChange={(event) => setPlayerResetEmail(event.target.value)} required />
+            </label>
+            <div className="panelActions panelActions--between full accountActions">
+              <button type="button" className="textBtn" onClick={() => setPlayerAuthMode("login")}>Zpět k přihlášení</button>
+              <button className="primaryBtn" type="submit" disabled={playerAuthLoading}>{playerAuthLoading ? "Odesílám..." : "Poslat odkaz"}</button>
+            </div>
+          </form>
+        )}
+      </>
+    );
   }
 
   return (
@@ -1114,6 +1432,72 @@ function ReservationPage() {
               </p>
            </div>
          </header>
+
+        <div className="playerAccountToggle">
+          <button type="button" className="ghostBtn playerAccountButton" onClick={() => setPlayerAccountOpen((current) => !current)} aria-expanded={playerAccountOpen}>
+            {playerProfile ? `Můj účet · ${playerProfile.firstName} ${playerProfile.lastName}` : "Přihlášení a registrace"}
+          </button>
+        </div>
+
+        {playerAccountOpen && (
+          <section className="playerAccountPanel" aria-label="Hráčský účet">
+            <div className="dashboardCardHeader accountPanelHeader">
+              <div>
+                <h2>{playerProfile ? "Můj hráčský účet" : "Hráčský účet"}</h2>
+                <p className="muted">{playerProfile ? "Správa údajů a vašich rezervací" : "Přihlaste se, nebo si zdarma vytvořte účet"}</p>
+              </div>
+              <button type="button" className="textBtn" onClick={() => setPlayerAccountOpen(false)}>Zavřít</button>
+            </div>
+
+            {playerProfile ? (
+              <>
+                <form className="formGrid accountForm" onSubmit={handlePlayerProfileSubmit}>
+                  <label>Jméno
+                    <input className="field" autoComplete="given-name" maxLength="100" value={playerProfileForm.firstName} onChange={(event) => setPlayerProfileForm((current) => ({ ...current, firstName: event.target.value }))} required />
+                  </label>
+                  <label>Příjmení
+                    <input className="field" autoComplete="family-name" maxLength="100" value={playerProfileForm.lastName} onChange={(event) => setPlayerProfileForm((current) => ({ ...current, lastName: event.target.value }))} required />
+                  </label>
+                  <label className="full">E-mail účtu
+                    <input className="field" type="email" value={playerProfile.email} disabled />
+                  </label>
+                  <label className="full">Telefon
+                    <input className="field" type="tel" autoComplete="tel" maxLength="50" value={playerProfileForm.phone} onChange={(event) => setPlayerProfileForm((current) => ({ ...current, phone: event.target.value }))} />
+                  </label>
+                  <div className="panelActions panelActions--between full accountActions">
+                    <button type="button" className="textBtn" onClick={handlePlayerLogout}>Odhlásit se</button>
+                    <button className="primaryBtn" type="submit" disabled={playerAuthLoading}>{playerAuthLoading ? "Ukládám..." : "Uložit údaje"}</button>
+                  </div>
+                </form>
+
+                <div className="playerReservations">
+                  <div className="dashboardCardHeader">
+                    <h3>Moje rezervace</h3>
+                    <button type="button" className="textBtn" onClick={loadPlayerReservations} disabled={playerReservationsLoading}>{playerReservationsLoading ? "Načítám…" : "Obnovit"}</button>
+                  </div>
+                  {playerReservations.length === 0 ? (
+                    <p className="muted">Zatím zde nemáte žádnou rezervaci.</p>
+                  ) : playerReservations.slice(0, 20).map((reservation) => (
+                    <article className="playerReservationRow" key={reservation.id}>
+                      <div>
+                        <strong>#{reservation.id} · {reservation.category_name}</strong>
+                        <p className="muted">{formatReservationTerm(reservation.slots || [])}</p>
+                        <p className="muted reservationCustomer">Pro: {[reservation.customer_first_name, reservation.customer_last_name].filter(Boolean).join(" ") || reservation.customer_email}</p>
+                      </div>
+                      <span className={`badge badge--${reservation.status}`}>{formatReservationStatus(reservation.status)}</span>
+                      {["pending", "confirmed"].includes(reservation.status) && (reservation.slots || []).length > 0 && (
+                        <button type="button" className="ghostBtn" onClick={() => handlePlayerCancellation(reservation.id)} disabled={playerReservationsLoading}>Stornovat</button>
+                      )}
+                    </article>
+                  ))}
+                </div>
+              </>
+            ) : renderPlayerAuthForms()}
+
+            {playerAuthStatus && <p className="status ok">{playerAuthStatus}</p>}
+            {playerAuthError && <p className="status error">{playerAuthError}</p>}
+          </section>
+        )}
 
         <Stepper step={step} />
 
@@ -1261,224 +1645,47 @@ function ReservationPage() {
           {step === 3 && (
             <>
               <h2 className="panelTitle panelTitle--center">Kdo bude hrát?</h2>
-              <p className="muted muted--center">Vyplňte údaje nebo se přihlaste pro čerpání kreditu</p>
+              <p className="muted muted--center">Údaje níže použijeme jen pro tuto konkrétní rezervaci.</p>
 
-              <div className="tabRow">
-                <button
-                  type="button"
-                  className={`tab ${customerMode === "guest" ? "tab--active" : ""}`}
-                  onClick={() => setCustomerMode("guest")}
-                >
-                  Nová rezervace
-                </button>
-                <button
-                  type="button"
-                  className={`tab ${customerMode === "login" ? "tab--active" : ""}`}
-                  onClick={() => setCustomerMode("login")}
-                >
-                  Přihlásit se
-                </button>
-              </div>
+              {!playerProfile && (
+                <div className="tabRow">
+                  <button type="button" className={`tab ${customerMode === "guest" ? "tab--active" : ""}`} onClick={() => setCustomerMode("guest")}>Pokračovat bez účtu</button>
+                  <button type="button" className={`tab ${customerMode === "login" ? "tab--active" : ""}`} onClick={() => setCustomerMode("login")}>Přihlásit / registrovat</button>
+                </div>
+              )}
 
-              {customerMode === "guest" ? (
-                <div className="formGrid">
-                  <label>
-                    Jméno
-                    <input className="field" value={firstName} onChange={(e) => setFirstName(e.target.value)} />
-                  </label>
-                  <label>
-                    Příjmení
-                    <input className="field" value={lastName} onChange={(e) => setLastName(e.target.value)} />
-                  </label>
-                  <label className="full">
-                    E-mail
-                    <input className="field" value={email} onChange={(e) => setEmail(e.target.value)} type="email" />
-                  </label>
-                  <label className="full">
-                    Telefon
-                    <input className="field" value={phone} onChange={(e) => setPhone(e.target.value)} />
-                  </label>
-                  <label className="full">
-                    Poznámka
-                    <textarea className="field" value={note} onChange={(e) => setNote(e.target.value)} />
-                  </label>
+              {!playerProfile && customerMode === "login" ? (
+                <div className="stepAuthBox">
+                  {renderPlayerAuthForms()}
+                  {playerAuthStatus && <p className="status ok">{playerAuthStatus}</p>}
+                  {playerAuthError && <p className="status error">{playerAuthError}</p>}
                 </div>
               ) : (
                 <>
-                  {playerProfile ? (
-                    <>
-                    <div className="summaryGrid">
-                      <article className="summaryCard">
-                        <h3>Přihlášený hráč</h3>
-                        <p>
-                          <strong>{playerProfile.firstName} {playerProfile.lastName}</strong>
-                        </p>
-                        <p className="muted">{playerProfile.email}</p>
-                        <p className="muted">{playerProfile.phone || "bez telefonu"}</p>
-                      </article>
-
-                      <article className="summaryCard">
-                        <h3>Rezervace</h3>
-                        <p className="muted">Rezervaci vytvoříme pod vaším hráčským účtem.</p>
-                        <div className="actionsRight">
-                          <button type="button" className="ghostBtn" onClick={handlePlayerLogout}>
-                            Odhlásit hráče
-                          </button>
-                        </div>
-                      </article>
+                  {playerProfile && (
+                    <div className="signedInNotice">
+                      <div><strong>Přihlášeno jako {playerProfile.firstName} {playerProfile.lastName}</strong><span>{playerProfile.email}</span></div>
+                      <button type="button" className="textBtn" onClick={() => setPlayerAccountOpen(true)}>Můj účet</button>
                     </div>
-                    <div className="playerReservations">
-                      <div className="dashboardCardHeader">
-                        <h3>Moje rezervace</h3>
-                        <button type="button" className="textBtn" onClick={loadPlayerReservations} disabled={playerReservationsLoading}>
-                          {playerReservationsLoading ? "Načítám…" : "Obnovit"}
-                        </button>
-                      </div>
-                      {playerReservations.length === 0 ? (
-                        <p className="muted">Zatím zde nemáte žádnou rezervaci.</p>
-                      ) : playerReservations.slice(0, 8).map((reservation) => (
-                        <article className="playerReservationRow" key={reservation.id}>
-                          <div>
-                            <strong>#{reservation.id} · {reservation.category_name}</strong>
-                            <p className="muted">
-                              {(reservation.slots || []).map((slot) => `${slot.date} ${slot.time_start.slice(0, 5)}–${slot.time_end.slice(0, 5)}`).join(", ") || reservation.status}
-                            </p>
-                          </div>
-                          <span className={`badge badge--${reservation.status}`}>{reservation.status}</span>
-                          {["pending", "confirmed"].includes(reservation.status) && (reservation.slots || []).length > 0 && (
-                            <button type="button" className="ghostBtn" onClick={() => handlePlayerCancellation(reservation.id)} disabled={playerReservationsLoading}>
-                              Stornovat
-                            </button>
-                          )}
-                        </article>
-                      ))}
-                    </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="tabRow">
-                        <button
-                          type="button"
-                          className={`tab ${playerAuthMode === "login" ? "tab--active" : ""}`}
-                          onClick={() => setPlayerAuthMode("login")}
-                        >
-                          Přihlášení
-                        </button>
-                        <button
-                          type="button"
-                          className={`tab ${playerAuthMode === "register" ? "tab--active" : ""}`}
-                          onClick={() => setPlayerAuthMode("register")}
-                        >
-                          Registrace hráče
-                        </button>
-                      </div>
-
-                      {playerAuthMode === "login" ? (
-                        <form className="formGrid" onSubmit={handlePlayerLoginSubmit}>
-                          <label className="full">
-                            E-mail
-                            <input
-                              className="field"
-                              type="email"
-                              value={playerLoginForm.email}
-                              onChange={(event) =>
-                                setPlayerLoginForm((current) => ({ ...current, email: event.target.value }))
-                              }
-                              required
-                            />
-                          </label>
-                          <label className="full">
-                            Heslo
-                            <input
-                              className="field"
-                              type="password"
-                              value={playerLoginForm.password}
-                              onChange={(event) =>
-                                setPlayerLoginForm((current) => ({ ...current, password: event.target.value }))
-                              }
-                              required
-                            />
-                          </label>
-                          <div className="actionsRight">
-                            <button className="primaryBtn" type="submit" disabled={playerAuthLoading}>
-                              {playerAuthLoading ? "Přihlašuji..." : "Přihlásit hráče"}
-                            </button>
-                          </div>
-                        </form>
-                      ) : (
-                        <form className="formGrid" onSubmit={handlePlayerRegisterSubmit}>
-                          <label>
-                            Jméno
-                            <input
-                              className="field"
-                              value={playerRegisterForm.firstName}
-                              onChange={(event) =>
-                                setPlayerRegisterForm((current) => ({ ...current, firstName: event.target.value }))
-                              }
-                              required
-                            />
-                          </label>
-                          <label>
-                            Příjmení
-                            <input
-                              className="field"
-                              value={playerRegisterForm.lastName}
-                              onChange={(event) =>
-                                setPlayerRegisterForm((current) => ({ ...current, lastName: event.target.value }))
-                              }
-                              required
-                            />
-                          </label>
-                          <label className="full">
-                            E-mail
-                            <input
-                              className="field"
-                              type="email"
-                              value={playerRegisterForm.email}
-                              onChange={(event) =>
-                                setPlayerRegisterForm((current) => ({ ...current, email: event.target.value }))
-                              }
-                              required
-                            />
-                          </label>
-                          <label className="full">
-                            Telefon
-                            <input
-                              className="field"
-                              value={playerRegisterForm.phone}
-                              onChange={(event) =>
-                                setPlayerRegisterForm((current) => ({ ...current, phone: event.target.value }))
-                              }
-                            />
-                          </label>
-                          <label className="full">
-                            Heslo
-                            <input
-                              className="field"
-                              type="password"
-                              value={playerRegisterForm.password}
-                              onChange={(event) =>
-                                setPlayerRegisterForm((current) => ({ ...current, password: event.target.value }))
-                              }
-                              required
-                            />
-                          </label>
-                          <div className="actionsRight">
-                            <button className="primaryBtn" type="submit" disabled={playerAuthLoading}>
-                              {playerAuthLoading ? "Vytvářím účet..." : "Vytvořit hráčský účet"}
-                            </button>
-                          </div>
-                        </form>
-                      )}
-
-                      {playerAuthError && <p className="status error">{playerAuthError}</p>}
-                    </>
                   )}
-
-                  <label className="full" style={{ marginTop: 12 }}>
-                    Poznámka
-                    <textarea className="field" value={note} onChange={(e) => setNote(e.target.value)} />
-                  </label>
+                  <div className="formGrid">
+                    <label>Jméno hráče
+                      <input className="field" autoComplete="given-name" maxLength="100" value={firstName} onChange={(e) => setFirstName(e.target.value)} required />
+                    </label>
+                    <label>Příjmení hráče
+                      <input className="field" autoComplete="family-name" maxLength="100" value={lastName} onChange={(e) => setLastName(e.target.value)} required />
+                    </label>
+                    <label className="full">E-mail pro tuto rezervaci
+                      <input className="field" value={email} onChange={(e) => setEmail(e.target.value)} type="email" autoComplete="email" required />
+                    </label>
+                    <label className="full">Telefon pro SMS k této rezervaci
+                      <input className="field" value={phone} onChange={(e) => setPhone(e.target.value)} type="tel" autoComplete="tel" maxLength="50" />
+                    </label>
+                    {playerProfile && <p className="muted full accountHint">Můžete zadat jiné jméno, e-mail i telefon — rezervace zůstane ve vašem účtu, ale zprávy odejdou osobě uvedené zde.</p>}
+                    <label className="full">Poznámka
+                      <textarea className="field" value={note} onChange={(e) => setNote(e.target.value)} />
+                    </label>
+                  </div>
                 </>
               )}
 
@@ -1543,8 +1750,8 @@ function ReservationPage() {
                   className={`payCard ${paymentMethod === "onsite" ? "payCard--active" : ""}`}
                   onClick={() => setPaymentMethod("onsite")}
                 >
-                  <strong>Na místě</strong>
-                  <span>Hotově / Kartou</span>
+                  <strong>Na místě pomocí QR kódu</strong>
+                  <span>Platba při návštěvě klubu</span>
                 </button>
               </div>
 
@@ -1652,9 +1859,11 @@ function AdminDashboardPage() {
   const [calendarLoading, setCalendarLoading] = useState(false);
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(today);
   const [showRecurringForm, setShowRecurringForm] = useState(false);
+  const [recurringError, setRecurringError] = useState("");
   const [recurringForm, setRecurringForm] = useState({
     categoryId: "",
     resourceId: "",
+    allResources: false,
     startDate: today,
     startTime: "08:00",
     durationMinutes: "90",
@@ -1663,6 +1872,7 @@ function AdminDashboardPage() {
     label: "Pravidelná interní rezervace",
   });
   const [hallBlockForm, setHallBlockForm] = useState({
+    wholeHall: false,
     label: "Soukromá akce",
     categoryId: "",
     mode: "single",
@@ -1672,8 +1882,8 @@ function AdminDashboardPage() {
     weekdays: [6, 7],
     repeatEveryWeeks: "1",
     allDay: true,
-    timeFrom: "08:00",
-    timeTo: "22:00",
+    timeFrom: "16:00",
+    timeTo: "19:00",
   });
   const [hallBlockLoading, setHallBlockLoading] = useState(false);
   const [error, setError] = useState("");
@@ -1758,6 +1968,10 @@ function AdminDashboardPage() {
     smsApiKeyConfigured: false,
     smsApiKeyMasked: "",
     smsConfirmationTemplate: DEFAULT_SMS_CONFIRMATION_TEMPLATE,
+    smsAdminNotificationEnabled: false,
+    smsAdminNotificationTemplate: DEFAULT_SMS_ADMIN_NOTIFICATION_TEMPLATE,
+    smsAdminRecipientIds: [],
+    smsAdminRecipients: [],
   });
   const [bookingSettingsLoading, setBookingSettingsLoading] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(false);
@@ -1795,6 +2009,7 @@ function AdminDashboardPage() {
         { id: "sources", label: "Stoly a trenéři", Icon: Package },
         { id: "pricing", label: "Otevírací doba a ceny", Icon: DollarSign },
         { id: "closures", label: "Soukromé akce", Icon: Calendar },
+        { id: "directory", label: "Adresář", Icon: Users },
         { id: "emails", label: "E-maily a SMS", Icon: TrendingUp },
         { id: "settings", label: "Nastavení klubu", Icon: Settings },
       ];
@@ -1833,6 +2048,92 @@ function AdminDashboardPage() {
     [calendarReservations]
   );
   const selectedCalendarEvents = calendarEventsByDate[selectedCalendarDate] || [];
+  const recurringScheduleCheck = useMemo(() => {
+    const category = adminCategories.find(
+      (item) => String(item.id) === String(recurringForm.categoryId)
+    );
+    const resources = adminResources.filter((item) => item.isActive && String(item.categoryId) === String(recurringForm.categoryId) &&
+      (recurringForm.allResources || String(item.id) === String(recurringForm.resourceId)));
+    const dayOfWeek = getIsoWeekday(recurringForm.startDate);
+
+    if (!category || !resources.length || !dayOfWeek) {
+      return { error: "Vyberte typ rezervace, konkrétní místo a první datum.", hint: "" };
+    }
+
+    function checkResource(resource) {
+    const matchingWindows = pricingWindows.filter(
+      (window) =>
+        Number(window.dayOfWeek) === dayOfWeek &&
+        (window.resourceId === null || Number(window.resourceId) === Number(resource.id))
+    );
+    const availableDays = [...new Set(
+      pricingWindows
+        .filter(
+          (window) =>
+            window.resourceId === null || Number(window.resourceId) === Number(resource.id)
+        )
+        .map((window) => Number(window.dayOfWeek))
+    )]
+      .sort((a, b) => a - b)
+      .map((day) => getWeekdayLabel(day).toLowerCase());
+    const dayLabel = getWeekdayLabel(dayOfWeek);
+
+    if (matchingWindows.length === 0) {
+      const daysHint = availableDays.length > 0
+        ? ` Dostupné dny: ${availableDays.join(", ")}.`
+        : " Nejprve nastavte otevírací dobu pro tento zdroj.";
+      return {
+        error: `${dayLabel} nemá pro ${resource.name} nastavené rezervační okno.${daysHint}`,
+        hint: "",
+      };
+    }
+
+    const slotMinutes = Math.max(Number(category.defaultSlotDuration) || 1, 1);
+    const durationMinutes = Number(recurringForm.durationMinutes);
+    const startMinutes = timeToMinutes(recurringForm.startTime);
+    const minimumMinutes = Math.max(Number(category.minBookingSlots) || 1, 1) * slotMinutes;
+    const windowLabels = matchingWindows.map(
+      (window) => `${formatTimeShort(window.timeFrom)}–${formatTimeShort(window.timeTo)}`
+    );
+
+    if (startMinutes === null || !Number.isFinite(durationMinutes) || durationMinutes <= 0) {
+      return { error: "Vyplňte platný začátek a délku rezervace.", hint: "" };
+    }
+    if (durationMinutes % slotMinutes !== 0) {
+      return { error: `Délka musí být násobkem ${slotMinutes} minut.`, hint: "" };
+    }
+    if (durationMinutes < minimumMinutes) {
+      return { error: `Minimální délka této rezervace je ${formatDurationMinutes(minimumMinutes)}.`, hint: "" };
+    }
+
+    const slotCount = durationMinutes / slotMinutes;
+    const fitsSchedule = Array.from({ length: slotCount }, (_unused, index) => {
+      const slotStart = startMinutes + index * slotMinutes;
+      const slotEnd = slotStart + slotMinutes;
+      return matchingWindows.some((window) => {
+        const windowStart = timeToMinutes(window.timeFrom);
+        const windowEnd = timeToMinutes(window.timeTo);
+        return windowStart !== null && windowEnd !== null && slotStart >= windowStart && slotEnd <= windowEnd && (slotStart-windowStart)%slotMinutes===0;
+      });
+    }).every(Boolean);
+
+    if (!fitsSchedule) {
+      return {
+        error: `${dayLabel} lze pro ${resource.name} rezervovat pouze v čase ${windowLabels.join(", ")}.`,
+        hint: "",
+      };
+    }
+
+    return {
+      error: "",
+      hint: `${dayLabel}: ${resource.name} má nastaveno ${windowLabels.join(", ")}. Všechny opakované termíny budou ve stejný den v týdnu.`,
+    };
+    }
+    const checks = resources.map(checkResource);
+    return checks.find((check) => check.error) || (recurringForm.allResources
+      ? { error: "", hint: `Termíny se vytvoří pro všech ${resources.length} aktivních míst tohoto typu. Systém ověří kolize všech termínů.` }
+      : checks[0]);
+  }, [adminCategories, adminResources, pricingWindows, recurringForm]);
 
   const overviewRows = useMemo(() => buildOverviewRowsForDate(reservations, today), [reservations]);
   const tomorrowOverviewRows = useMemo(
@@ -2024,6 +2325,15 @@ function AdminDashboardPage() {
     loadCalendarReservations(nextMonth);
   }
 
+  function selectCalendarDay(day) {
+    const targetMonth = day.dateKey.slice(0, 7);
+    setSelectedCalendarDate(day.dateKey);
+    if (targetMonth !== calendarMonth) {
+      setCalendarMonth(targetMonth);
+      loadCalendarReservations(targetMonth);
+    }
+  }
+
   async function loadSmsLogs() {
     if (!api.getAdminToken() || isSuperAdmin) return;
     setSmsLogsLoading(true);
@@ -2171,6 +2481,10 @@ function AdminDashboardPage() {
         smsApiKeyConfigured: Boolean(data?.smsApiKeyConfigured),
         smsApiKeyMasked: data?.smsApiKeyMasked || "",
         smsConfirmationTemplate: data?.smsConfirmationTemplate || DEFAULT_SMS_CONFIRMATION_TEMPLATE,
+        smsAdminNotificationEnabled: Boolean(data?.smsAdminNotificationEnabled),
+        smsAdminNotificationTemplate: data?.smsAdminNotificationTemplate || DEFAULT_SMS_ADMIN_NOTIFICATION_TEMPLATE,
+        smsAdminRecipientIds: data?.smsAdminRecipientIds || [],
+        smsAdminRecipients: data?.smsAdminRecipients || [],
       });
     } catch (err) {
       setCatalogError(err.message);
@@ -2773,6 +3087,7 @@ function AdminDashboardPage() {
       id: pricingWindow.id,
       categoryId: String(pricingWindow.categoryId),
       resourceId: pricingWindow.resourceId ? String(pricingWindow.resourceId) : "",
+      resourceIds: pricingWindow.resourceId ? [String(pricingWindow.resourceId)] : adminResources.map((resource) => String(resource.id)),
       dayOfWeek: String(pricingWindow.dayOfWeek),
       timeFrom: formatTimeShort(pricingWindow.timeFrom),
       timeTo: formatTimeShort(pricingWindow.timeTo),
@@ -2795,7 +3110,7 @@ function AdminDashboardPage() {
     try {
       await api.updateAdminPricingWindow(editingPricingWindow.id, {
         categoryId: Number(editingPricingWindow.categoryId),
-        resourceId: editingPricingWindow.resourceId ? Number(editingPricingWindow.resourceId) : null,
+        resourceIds: (editingPricingWindow.resourceIds || []).map(Number),
         dayOfWeek: Number(editingPricingWindow.dayOfWeek),
         timeFrom: editingPricingWindow.timeFrom,
         timeTo: editingPricingWindow.timeTo,
@@ -2850,6 +3165,9 @@ function AdminDashboardPage() {
         smsApiKey: bookingSettings.smsApiKey.trim(),
         smsConfirmationTemplate:
           bookingSettings.smsConfirmationTemplate.trim() || DEFAULT_SMS_CONFIRMATION_TEMPLATE,
+        smsAdminNotificationEnabled: Boolean(bookingSettings.smsAdminNotificationEnabled),
+        smsAdminNotificationTemplate: bookingSettings.smsAdminNotificationTemplate.trim() || DEFAULT_SMS_ADMIN_NOTIFICATION_TEMPLATE,
+        smsAdminRecipientIds: bookingSettings.smsAdminRecipientIds,
       });
       setBookingSettings({
         minAdvanceMinutes: Math.max(Number(saved?.minAdvanceMinutes) || 0, 0),
@@ -2858,6 +3176,10 @@ function AdminDashboardPage() {
         smsApiKeyConfigured: Boolean(saved?.smsApiKeyConfigured),
         smsApiKeyMasked: saved?.smsApiKeyMasked || "",
         smsConfirmationTemplate: saved?.smsConfirmationTemplate || DEFAULT_SMS_CONFIRMATION_TEMPLATE,
+        smsAdminNotificationEnabled: Boolean(saved?.smsAdminNotificationEnabled),
+        smsAdminNotificationTemplate: saved?.smsAdminNotificationTemplate || DEFAULT_SMS_ADMIN_NOTIFICATION_TEMPLATE,
+        smsAdminRecipientIds: saved?.smsAdminRecipientIds || [],
+        smsAdminRecipients: saved?.smsAdminRecipients || [],
       });
       setNotice("Pravidla rezervace a nastavení SMS uložena.");
     } catch (err) {
@@ -2894,6 +3216,11 @@ function AdminDashboardPage() {
     }
   }
 
+  async function refreshSmsAdminRecipients() {
+    const data = await api.getAdminBookingSettings();
+    setBookingSettings((current) => ({ ...current, smsAdminRecipients: data.smsAdminRecipients || [], smsAdminRecipientIds: current.smsAdminRecipientIds.filter((id) => (data.smsAdminRecipients || []).some((admin) => admin.id === id)) }));
+  }
+
   async function handleCreateStaffAdmin(event) {
     event.preventDefault();
     setCatalogError("");
@@ -2920,6 +3247,7 @@ function AdminDashboardPage() {
       setShowCreateStaffForm(false);
       setNotice("Admin zaměstnanec vytvořen.");
       await loadAdminSettingsPanel();
+      await refreshSmsAdminRecipients();
     } catch (err) {
       setCatalogError(err.message);
     } finally {
@@ -2961,6 +3289,7 @@ function AdminDashboardPage() {
       setEditingStaff(null);
       setNotice("Admin zaměstnanec upraven.");
       await loadAdminSettingsPanel();
+      await refreshSmsAdminRecipients();
     } catch (err) {
       setCatalogError(err.message);
     } finally {
@@ -3036,6 +3365,11 @@ function AdminDashboardPage() {
 
   async function handleCreateRecurringReservations(event) {
     event.preventDefault();
+    setRecurringError("");
+    if (recurringScheduleCheck.error) {
+      setRecurringError(recurringScheduleCheck.error);
+      return;
+    }
     setLoading(true);
     setError("");
     setNotice("");
@@ -3043,6 +3377,7 @@ function AdminDashboardPage() {
       const result = await api.createRecurringReservations({
         categoryId: Number(recurringForm.categoryId),
         resourceId: Number(recurringForm.resourceId),
+        allResources: recurringForm.allResources,
         startDate: recurringForm.startDate,
         startTime: recurringForm.startTime,
         durationMinutes: Number(recurringForm.durationMinutes),
@@ -3057,7 +3392,7 @@ function AdminDashboardPage() {
         ...(reservationView === "calendar" ? [loadCalendarReservations(calendarMonth)] : []),
       ]);
     } catch (err) {
-      setError(err.message);
+      setRecurringError(humanizeRecurringReservationError(err.message));
     } finally {
       setLoading(false);
     }
@@ -3081,6 +3416,7 @@ function AdminDashboardPage() {
       const result = await api.createHallBlock({
         label: hallBlockForm.label.trim(),
         categoryId: Number(hallBlockForm.categoryId),
+        wholeHall: hallBlockForm.wholeHall,
         mode: hallBlockForm.mode,
         singleDate: hallBlockForm.singleDate,
         dateFrom: hallBlockForm.dateFrom,
@@ -3091,7 +3427,7 @@ function AdminDashboardPage() {
         timeFrom: hallBlockForm.timeFrom,
         timeTo: hallBlockForm.timeTo,
       });
-      setNotice(`Soukromá akce byla uložena. Zablokováno ${result.created?.length || 0} termínů pro všechny stoly.`);
+      setNotice(`Soukromá akce byla uložena. Počet termínů: ${result.occurrences ?? new Set((result.created || []).map((item) => item.date)).size}. ${hallBlockForm.wholeHall ? "Zablokována celá hala – všechny stoly i trenéři." : "Zablokovány všechny aktivní stoly nebo trenéři ve vybraném typu rezervace."}`);
       await loadReservations();
     } catch (err) {
       setError(err.message);
@@ -3359,7 +3695,7 @@ function AdminDashboardPage() {
                   </div>
                 </div>
                 <div className="actionsRight">
-                  <button className="ghostBtn ghostBtn--approve" type="button" onClick={() => setShowRecurringForm((value) => !value)}>
+                  <button className="ghostBtn ghostBtn--approve" type="button" onClick={() => { setRecurringError(""); setError(""); setShowRecurringForm((value) => !value); }}>
                     {showRecurringForm ? "Zavřít opakování" : "+ Opakovaná rezervace"}
                   </button>
                   <button
@@ -3377,26 +3713,36 @@ function AdminDashboardPage() {
                 <form className="formGrid recurringReservationForm" onSubmit={handleCreateRecurringReservations}>
                   <label className="full">
                     Název interní blokace
-                    <input className="field" value={recurringForm.label} onChange={(event) => setRecurringForm((current) => ({ ...current, label: event.target.value }))} required />
+                    <input className="field" value={recurringForm.label} onChange={(event) => { setRecurringError(""); setRecurringForm((current) => ({ ...current, label: event.target.value })); }} required />
                   </label>
                   <label>
                     Typ rezervace
-                    <select className="field" value={recurringForm.categoryId} onChange={(event) => { const value = event.target.value; setRecurringForm((current) => ({ ...current, categoryId: value, resourceId: "" })); setSelectedCategoryId(value); }} required>
+                    <select className="field" value={recurringForm.categoryId} onChange={(event) => { const value = event.target.value; setRecurringError(""); setRecurringForm((current) => ({ ...current, categoryId: value, resourceId: "" })); setSelectedCategoryId(value); }} required>
                       {adminCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
                     </select>
                   </label>
                   <label>
                     Konkrétní stůl nebo trenér
-                    <select className="field" value={recurringForm.resourceId} onChange={(event) => setRecurringForm((current) => ({ ...current, resourceId: event.target.value }))} required>
+                    <select className="field" value={recurringForm.allResources ? "all" : recurringForm.resourceId} onChange={(event) => { setRecurringError(""); setRecurringForm((current) => ({ ...current, allResources: event.target.value === "all", resourceId: event.target.value === "all" ? current.resourceId : event.target.value })); }} required>
+                      <option value="all">Všechny aktivní stoly / trenéři tohoto typu</option>
                       {adminResources.filter((resource) => resource.isActive).map((resource) => <option key={resource.id} value={resource.id}>{resource.name}</option>)}
                     </select>
                   </label>
-                  <label>První datum<input className="field" type="date" min={today} value={recurringForm.startDate} onChange={(event) => setRecurringForm((current) => ({ ...current, startDate: event.target.value }))} required /></label>
-                  <label>Začátek<input className="field" type="time" value={recurringForm.startTime} onChange={(event) => setRecurringForm((current) => ({ ...current, startTime: event.target.value }))} required /></label>
-                  <label>Délka (minuty)<input className="field" type="number" min="30" step="30" value={recurringForm.durationMinutes} onChange={(event) => setRecurringForm((current) => ({ ...current, durationMinutes: event.target.value }))} required /></label>
-                  <label>Opakovat každých týdnů<input className="field" type="number" min="1" max="12" value={recurringForm.repeatEveryWeeks} onChange={(event) => setRecurringForm((current) => ({ ...current, repeatEveryWeeks: event.target.value }))} required /></label>
-                  <label>Počet termínů<input className="field" type="number" min="1" max="52" value={recurringForm.occurrences} onChange={(event) => setRecurringForm((current) => ({ ...current, occurrences: event.target.value }))} required /></label>
-                  <div className="actionsRight"><button className="primaryBtn" type="submit" disabled={loading}>Vytvořit všechny termíny</button></div>
+                  <label>První datum<input className="field" type="date" min={today} value={recurringForm.startDate} onChange={(event) => { setRecurringError(""); setRecurringForm((current) => ({ ...current, startDate: event.target.value })); }} required /></label>
+                  <label>Začátek<input className="field" type="time" step={(Number(selectedAdminCategory?.defaultSlotDuration) || 30) * 60} value={recurringForm.startTime} onChange={(event) => { setRecurringError(""); setRecurringForm((current) => ({ ...current, startTime: event.target.value })); }} required /></label>
+                  <label>Délka (minuty)<input className="field" type="number" min={(Number(selectedAdminCategory?.minBookingSlots) || 1) * (Number(selectedAdminCategory?.defaultSlotDuration) || 30)} step={Number(selectedAdminCategory?.defaultSlotDuration) || 30} value={recurringForm.durationMinutes} onChange={(event) => { setRecurringError(""); setRecurringForm((current) => ({ ...current, durationMinutes: event.target.value })); }} required /></label>
+                  <label>Opakovat každých týdnů<input className="field" type="number" min="1" max="12" value={recurringForm.repeatEveryWeeks} onChange={(event) => { setRecurringError(""); setRecurringForm((current) => ({ ...current, repeatEveryWeeks: event.target.value })); }} required /></label>
+                  <label>Počet termínů<input className="field" type="number" min="1" max="52" value={recurringForm.occurrences} onChange={(event) => { setRecurringError(""); setRecurringForm((current) => ({ ...current, occurrences: event.target.value })); }} required /></label>
+                  {recurringScheduleCheck.error && !recurringError && (
+                    <p className="status error recurringFormStatus full" role="alert">{recurringScheduleCheck.error}</p>
+                  )}
+                  {recurringError && (
+                    <p className="status error recurringFormStatus full" role="alert">{recurringError}</p>
+                  )}
+                  {!recurringScheduleCheck.error && recurringScheduleCheck.hint && (
+                    <p className="recurringScheduleHint full">{recurringScheduleCheck.hint}</p>
+                  )}
+                  <div className="actionsRight full"><button className="primaryBtn" type="submit" disabled={loading || catalogLoading || Boolean(recurringScheduleCheck.error)}>{loading ? "Vytvářím termíny..." : "Vytvořit všechny termíny"}</button></div>
                 </form>
               )}
 
@@ -3430,6 +3776,7 @@ function AdminDashboardPage() {
                     )}
                     {reservations.map((reservation) => {
                       const termLabel = formatReservationTerm(reservation.slots || []);
+                      const slotSummaries = summarizeReservationSlots(reservation.slots || []);
                       const isPending = reservation.status === "pending";
 
                       return (
@@ -3451,13 +3798,33 @@ function AdminDashboardPage() {
                             : `${reservation.first_name} ${reservation.last_name} - ${reservation.email}${reservation.phone ? ` - ${reservation.phone}` : ""}`}
                         </p>
 
-                        <div className="slotRows">
-                          {reservation.slots.map((slot) => (
-                            <span key={`${reservation.id}_${slot.date}_${slot.time_start}`} className="slotRow">
-                              {slot.date} {slot.time_start.slice(0, 5)}-{slot.time_end.slice(0, 5)} | {slot.resource_name} | {formatCurrencyCZK(slot.price)}
-                            </span>
+                        <div className="reservationSlotSummary">
+                          {slotSummaries.map((summary) => (
+                            <div key={`${reservation.id}_${summary.dateKey}`} className="reservationSlotSummaryRow">
+                              <strong>{formatLongDate(summary.dateKey)}</strong>
+                              <span>{summary.start}-{summary.end}</span>
+                              <span>
+                                {summary.resources.length > 1
+                                  ? `${summary.resources.length} místa: ${summary.resources.join(", ")}`
+                                  : (summary.resources[0] || "Bez přiřazeného místa")}
+                              </span>
+                              <small>{formatBlockCount(summary.slotCount)} celkem</small>
+                            </div>
                           ))}
                         </div>
+
+                        {reservation.slots.length > 1 && (
+                          <details className="reservationSlotDetails">
+                            <summary>Zobrazit technický rozpis ({formatBlockCount(reservation.slots.length)})</summary>
+                            <div className="slotRows slotRows--collapsedDetail">
+                              {reservation.slots.map((slot, slotIndex) => (
+                                <span key={`${reservation.id}_${slot.resource_name}_${slot.date}_${slot.time_start}_${slotIndex}`} className="slotRow">
+                                  {slot.date} {slot.time_start.slice(0, 5)}-{slot.time_end.slice(0, 5)} | {slot.resource_name} | {formatCurrencyCZK(slot.price)}
+                                </span>
+                              ))}
+                            </div>
+                          </details>
+                        )}
 
                         {!['cancelled', 'rejected'].includes(reservation.status) && (
                           <div className="actionsRight">
@@ -3513,12 +3880,11 @@ function AdminDashboardPage() {
                         >
                           <button
                             type="button"
-                            className="calendarDayNumber"
-                            disabled={!day.inMonth}
-                            onClick={() => setSelectedCalendarDate(day.dateKey)}
+                            className="calendarDaySelect"
+                            onClick={() => selectCalendarDay(day)}
                             aria-label={`${formatLongDate(day.dateKey)}, ${formatReservationCount(dayEvents.length)}`}
                           >
-                            {day.dayNumber}
+                            <span className="calendarDayNumber">{day.dayNumber}</span>
                           </button>
                           <div className="calendarDayEvents">
                             {dayEvents.slice(0, 3).map((event) => (
@@ -3526,14 +3892,14 @@ function AdminDashboardPage() {
                                 type="button"
                                 key={`${event.reservation.id}_${event.dateKey}`}
                                 className={`calendarEvent calendarEvent--${event.reservation.status}`}
-                                onClick={() => setSelectedCalendarDate(day.dateKey)}
+                                onClick={() => selectCalendarDay(day)}
                                 title={`${event.start}-${event.end} · ${event.title} · ${event.resources.join(', ')}`}
                               >
                                 <strong>{event.start}</strong>
                                 <span>{event.title}</span>
                               </button>
                             ))}
-                            {dayEvents.length > 3 && <button type="button" className="calendarMore" onClick={() => setSelectedCalendarDate(day.dateKey)}>+{dayEvents.length - 3} další</button>}
+                            {dayEvents.length > 3 && <button type="button" className="calendarMore" onClick={() => selectCalendarDay(day)}>+{dayEvents.length - 3} další</button>}
                           </div>
                         </div>
                       );
@@ -3549,7 +3915,7 @@ function AdminDashboardPage() {
                       <span className="badge">{formatReservationCount(selectedCalendarEvents.length)}</span>
                     </div>
                     {selectedCalendarEvents.length === 0 ? (
-                      <div className="emptyState"><strong>V tento den nejsou žádné rezervace.</strong><span>Vyberte jiný den v kalendáři.</span></div>
+                      <div className="emptyState"><strong>Tento den je bez rezervací.</strong><span>Pro vybrané datum zatím není naplánovaná žádná rezervace ani soukromá akce.</span></div>
                     ) : (
                       <div className="calendarDetailList">
                         {selectedCalendarEvents.map((event) => {
@@ -3587,7 +3953,7 @@ function AdminDashboardPage() {
                   <span className="eyebrow">Plánování provozu</span>
                   <h1 className="dashboardTitle">Soukromé akce a uzavření haly</h1>
                   <p className="dashboardSubtitle">
-                    Jedním krokem zablokujete všechny stoly pro utkání, extraligu, turnaj nebo soukromou akci.
+                    Jedním krokem zablokujete celou halu nebo vybraný typ rezervace pro utkání, turnaj či soukromou akci.
                   </p>
                 </div>
               </section>
@@ -3599,7 +3965,7 @@ function AdminDashboardPage() {
                       <span className="stepKicker">Nová blokace</span>
                       <h2>Co se bude v hale konat?</h2>
                     </div>
-                    <span className="badge badge--confirmed">Všechny stoly</span>
+                    <span className="badge badge--confirmed">{hallBlockForm.wholeHall ? "Celá hala" : "Vybraný typ rezervace"}</span>
                   </div>
 
                   <form className="hallBlockForm" onSubmit={handleCreateHallBlock}>
@@ -3618,11 +3984,12 @@ function AdminDashboardPage() {
                       Co chcete zablokovat
                       <select
                         className="field"
-                        value={hallBlockForm.categoryId}
-                        onChange={(event) => setHallBlockForm((current) => ({ ...current, categoryId: event.target.value }))}
+                        value={hallBlockForm.wholeHall ? "hall" : hallBlockForm.categoryId}
+                        onChange={(event) => setHallBlockForm((current) => ({ ...current, wholeHall: event.target.value === "hall", categoryId: event.target.value === "hall" ? current.categoryId : event.target.value }))}
                         required
                       >
                         <option value="">Vyberte stoly nebo trenéry</option>
+                        <option value="hall">Celá hala – všechny stoly i trenéři</option>
                         {adminCategories.map((category) => (
                           <option key={category.id} value={category.id}>
                             {category.name}
@@ -3702,31 +4069,29 @@ function AdminDashboardPage() {
                       </>
                     )}
 
-                    <label className="full switchRow">
-                      <span>
-                        <strong>Blokovat celý provozní den</strong>
-                        <small>Zablokují se všechny časy, které máte nastavené v otevírací době.</small>
-                      </span>
-                      <input type="checkbox" checked={hallBlockForm.allDay} onChange={(event) => setHallBlockForm((current) => ({ ...current, allDay: event.target.checked }))} />
-                    </label>
+                    <div className="full choiceCards" role="group" aria-label="Délka soukromé akce">
+                      <button type="button" aria-pressed={hallBlockForm.allDay} className={`choiceCard ${hallBlockForm.allDay ? "choiceCard--active" : ""}`} onClick={() => setHallBlockForm((current) => ({ ...current, allDay: true }))}><strong>{hallBlockForm.wholeHall ? "Celý den" : "Celý provozní den"}</strong><span>{hallBlockForm.wholeHall ? "Uzavření celé haly na celý den" : "Všechny časy z otevírací doby"}</span></button>
+                      <button type="button" aria-pressed={!hallBlockForm.allDay} className={`choiceCard ${!hallBlockForm.allDay ? "choiceCard--active" : ""}`} onClick={() => setHallBlockForm((current) => ({ ...current, allDay: false }))}><strong>Konkrétní čas od–do</strong><span>Například 16:00–19:00</span></button>
+                    </div>
 
                     {!hallBlockForm.allDay && (
                       <>
-                        <label>Od<input className="field" type="time" value={hallBlockForm.timeFrom} onChange={(event) => setHallBlockForm((current) => ({ ...current, timeFrom: event.target.value }))} required /></label>
-                        <label>Do<input className="field" type="time" value={hallBlockForm.timeTo} onChange={(event) => setHallBlockForm((current) => ({ ...current, timeTo: event.target.value }))} required /></label>
+                        <label>Začátek akce<input className="field" type="time" step="60" value={hallBlockForm.timeFrom} onChange={(event) => setHallBlockForm((current) => ({ ...current, timeFrom: event.target.value }))} required /></label>
+                        <label>Konec akce<input className="field" type="time" step="60" value={hallBlockForm.timeTo} onChange={(event) => setHallBlockForm((current) => ({ ...current, timeTo: event.target.value }))} required /></label>
+                        <p className="muted full">{hallBlockForm.wholeHall ? "Ve vybraném čase se uzavře celá hala včetně všech stolů a trenérů. Blokace platí i pro zdroje bez nastavené otevírací doby. Mimo interval je možné dál rezervovat; bloky zasahující do akce nejsou dostupné." : "Mimo tento interval zůstávají stoly nebo trenéři dostupní podle otevírací doby. Pokud čas zasáhne část rezervačního bloku, zablokuje se celý dotčený blok."}</p>
                       </>
                     )}
 
                     <div className="full formSummary">
                       <strong>Co se stane</strong>
                       <p>
-                        Systém zkontroluje kolize a potom vytvoří interní rezervaci pro každý aktivní stůl. Pokud už je některý termín obsazený, nic se nevytvoří a zobrazí se konkrétní problém.
+                        Systém zkontroluje kolize a potom zablokuje {hallBlockForm.wholeHall ? "všechny aktivní stoly i trenéry v celém klubu" : "všechny aktivní stoly nebo trenéry ve vybraném typu rezervace"}. Pokud už je některý termín obsazený, nic se nevytvoří a zobrazí se konkrétní problém.
                       </p>
                     </div>
 
                     <div className="full actionsRight">
                       <button className="primaryBtn primaryBtn--large" type="submit" disabled={hallBlockLoading}>
-                        {hallBlockLoading ? "Kontroluji termíny..." : "Zablokovat všechny stoly"}
+                        {hallBlockLoading ? "Kontroluji termíny..." : hallBlockForm.wholeHall ? "Zablokovat celou halu" : "Zablokovat vybraný typ rezervace"}
                       </button>
                     </div>
                   </form>
@@ -3738,7 +4103,7 @@ function AdminDashboardPage() {
                   <ol className="guideSteps">
                     <li><span>1</span><div><strong>Vyberete akci a období</strong><p>Jednorázově nebo v konkrétní dny.</p></div></li>
                     <li><span>2</span><div><strong>Systém prověří kolize</strong><p>Existující rezervace zůstanou v bezpečí.</p></div></li>
-                    <li><span>3</span><div><strong>Všechny stoly se uzavřou</strong><p>Zákazníci je v daný čas neuvidí jako volné.</p></div></li>
+                    <li><span>3</span><div><strong>Vybrané zdroje se uzavřou</strong><p>Celá hala zahrnuje všechny stoly i trenéry. Zákazníci je v daný čas neuvidí jako volné.</p></div></li>
                   </ol>
                   <button className="ghostBtn" type="button" onClick={() => { setTab("reservations"); setShowRecurringForm(true); }}>
                     Potřebuji blokovat jen jeden stůl
@@ -3768,6 +4133,7 @@ function AdminDashboardPage() {
                           </div>
                           <div className="eventRowMain">
                             <strong>{reservation.label || "Interní blokace"}</strong>
+                            {reservation.note?.includes("[celá hala]") && <span>Celá hala – všechny stoly i trenéři</span>}
                             <span>{formatReservationTerm(reservation.slots || [])}</span>
                             <small>{resourceNames.length} {resourceNames.length === 1 ? "položka" : resourceNames.length < 5 ? "položky" : "položek"}: {resourceNames.join(", ")}</small>
                           </div>
@@ -4624,6 +4990,7 @@ function AdminDashboardPage() {
                         <select
                           className="field"
                           value={editingPricingWindow.categoryId}
+                          disabled
                           onChange={(event) => setEditingPricingWindow((current) => ({ ...current, categoryId: event.target.value }))}
                           required
                         >
@@ -4635,21 +5002,12 @@ function AdminDashboardPage() {
                         </select>
                       </label>
 
-                      <label>
-                        Stůl nebo trenér
-                        <select
-                          className="field"
-                          value={editingPricingWindow.resourceId}
-                          onChange={(event) => setEditingPricingWindow((current) => ({ ...current, resourceId: event.target.value }))}
-                        >
-                          <option value="">Všechny stoly a trenéři tohoto typu</option>
-                          {adminResources.map((resource) => (
-                            <option key={resource.id} value={String(resource.id)}>
-                              #{resource.id} {resource.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <fieldset className="full pricingResourceSelection">
+                        <legend>Upravit okno pro stoly / trenéry</legend>
+                        <div className="actionsRight"><button className="ghostBtn ghostBtn--approve" type="button" onClick={() => setEditingPricingWindow((current) => ({ ...current, resourceIds: adminResources.map((resource) => String(resource.id)) }))}>Vybrat všechny</button></div>
+                        <div className="resourceCheckboxGrid">{adminResources.map((resource) => <label key={resource.id} className="resourceCheckbox"><input type="checkbox" checked={(editingPricingWindow.resourceIds || []).includes(String(resource.id))} onChange={(event) => setEditingPricingWindow((current) => ({ ...current, resourceIds: event.target.checked ? [...(current.resourceIds || []), String(resource.id)] : (current.resourceIds || []).filter((id) => id !== String(resource.id)) }))}/>{resource.name}</label>)}</div>
+                        <p className="muted">U vybraných míst se upraví odpovídající původní okno. Pokud ho místo nemá, přidá se nové. Ostatní časy se zachovají.</p>
+                      </fieldset>
 
                       <label>
                         Den v týdnu
@@ -4701,7 +5059,7 @@ function AdminDashboardPage() {
                       </label>
 
                       <div className="actionsRight">
-                        <button className="primaryBtn" type="submit">Uložit změny</button>
+                        <button className="primaryBtn" type="submit" disabled={!editingPricingWindow.resourceIds?.length}>Uložit změny pro {editingPricingWindow.resourceIds?.length || 0} míst</button>
                         <button className="ghostBtn" type="button" onClick={() => setEditingPricingWindow(null)}>Zrušit</button>
                       </div>
                     </form>
@@ -4822,6 +5180,8 @@ function AdminDashboardPage() {
           )}
 
 
+          {tab === "directory" && !isSuperAdmin && <ContactDirectory onOpenLogs={() => setTab("emails")} />}
+
           {tab === "emails" && !isSuperAdmin && (
             <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
               {/* Šablony emailů */}
@@ -4840,7 +5200,11 @@ function AdminDashboardPage() {
                         ← Zpět na přehled
                       </button>
                       <h3 style={{ margin: 0 }}>
-                        {editingTemplateType === "rejection"
+                        {editingTemplateType === "admin_customer_cancellation"
+                          ? "Storno zákazníkem – oznámení adminům klubu"
+                          : editingTemplateType === "customer_cancellation"
+                            ? "Storno zákazníkem – potvrzení zákazníkovi"
+                            : editingTemplateType === "rejection"
                           ? "Zamítnutí rezervace"
                           : editingTemplateType === "cancellation"
                             ? "Storno rezervace"
@@ -4948,9 +5312,9 @@ function AdminDashboardPage() {
                   </div>
                 ) : (
                   <div className="adminList">
-                    {(["customer_summary", "confirmation", "rejection", "cancellation"]).map((type) => {
+                    {(["customer_summary", "confirmation", "rejection", "cancellation", "customer_cancellation", "admin_customer_cancellation"]).map((type) => {
                       const tpl = emailTemplates[type];
-                      const labels = { customer_summary: "Shrnutí rezervace", confirmation: "Potvrzení rezervace", rejection: "Zamítnutí rezervace", cancellation: "Storno rezervace" };
+                      const labels = { customer_summary: "Shrnutí rezervace", confirmation: "Potvrzení rezervace", rejection: "Zamítnutí rezervace", cancellation: "Storno administrátorem – zákazníkovi", customer_cancellation: "Storno zákazníkem – potvrzení zákazníkovi", admin_customer_cancellation: "Storno zákazníkem – oznámení adminům klubu" };
                       return (
                         <article key={type} className="adminItem adminItem--tableLike">
                           <div className="adminItemTop">
@@ -5001,17 +5365,19 @@ function AdminDashboardPage() {
                       <article key={log.id} className="adminItem adminItem--tableLike">
                         <div className="adminItemTop">
                           <strong>{log.subject}</strong>
-                          <span className={`badge ${log.deliveryStatus === 'failed' ? 'badge--rejected' : log.type === 'confirmation' ? 'badge--confirmed' : ['cancellation', 'customer_cancellation', 'rejection'].includes(log.type) ? 'badge--cancelled' : log.type === 'admin_notification' ? 'badge--pending' : ''}`}>
+                          <span className={`badge ${log.deliveryStatus === 'failed' ? 'badge--rejected' : log.type === 'confirmation' ? 'badge--confirmed' : ['cancellation', 'customer_cancellation', 'admin_customer_cancellation', 'rejection'].includes(log.type) ? 'badge--cancelled' : log.type === 'admin_notification' ? 'badge--pending' : ''}`}>
                             {log.deliveryStatus === 'failed'
                               ? 'Chyba odeslání'
-                              : log.type === 'admin_notification'
+                              : log.type === 'directory_message'
+                                ? 'Zpráva z adresáře'
+                                : log.type === 'admin_notification'
                                 ? 'Admin'
                                 : log.type === 'customer_summary'
                                   ? 'Zákazník'
                                   : log.type === 'rejection'
                                     ? 'Zamítnutí'
-                                    : ['cancellation', 'customer_cancellation'].includes(log.type)
-                                      ? 'Storno'
+                                    : ['cancellation', 'customer_cancellation', 'admin_customer_cancellation'].includes(log.type)
+                                      ? (log.type === 'admin_customer_cancellation' ? 'Storno – admin' : 'Storno')
                                       : 'Potvrzení'}
                           </span>
                         </div>
@@ -5045,6 +5411,7 @@ function AdminDashboardPage() {
                       <article key={log.id} className="adminItem adminItem--tableLike">
                         <div className="adminItemTop">
                           <strong>{log.recipientPhone}</strong>
+                          <span className="muted">{log.type === "admin_new_reservation" ? "Nová rezervace – správci" : "Potvrzení – zákazníkovi"}</span>
                           <span className={`badge ${log.deliveryStatus === "accepted" ? "badge--confirmed" : log.deliveryStatus === "skipped" ? "badge--pending" : "badge--rejected"}`}>
                             {log.deliveryStatus === "accepted"
                               ? "Přijato bránou"
@@ -5348,7 +5715,7 @@ function AdminDashboardPage() {
                   <div className="full" style={{ display: "flex", flexDirection: "column", gap: "14px", paddingTop: "8px" }}>
                     <div className="dashboardCardHeader dashboardCardHeader--inline">
                       <div>
-                        <h3>SMS potvrzení přes SmsManager</h3>
+                        <h3>SMS zákazníkovi přes SmsManager</h3>
                         <span className="muted">SMS se odešle zákazníkovi při schválení rezervace správcem.</span>
                       </div>
                       <label style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: "8px" }}>
@@ -5359,7 +5726,7 @@ function AdminDashboardPage() {
                             setBookingSettings((current) => ({ ...current, smsEnabled: event.target.checked }))
                           }
                         />
-                        Aktivní
+                        Posílat zákazníkovi
                       </label>
                     </div>
 
@@ -5378,7 +5745,7 @@ function AdminDashboardPage() {
                         }
                       />
                       <span className="muted" style={{ fontSize: "12px" }}>
-                        Klíč se ukládá šifrovaně a nikdy se neposílá zpět do prohlížeče. Získáte jej v části API &amp; Cloud služby SmsManager.
+                        Společný klíč pro SMS zákazníkům i správcům. Ukládá se šifrovaně a nikdy se neposílá zpět do prohlížeče. Získáte jej v části API &amp; Cloud služby SmsManager.
                       </span>
                     </label>
 
@@ -5400,8 +5767,41 @@ function AdminDashboardPage() {
                     </label>
                   </div>
 
+                  <div className="full" style={{ display: "flex", flexDirection: "column", gap: "14px", paddingTop: "8px" }}>
+                    <div className="dashboardCardHeader dashboardCardHeader--inline">
+                      <div>
+                        <h3>SMS správcům při nové rezervaci</h3>
+                        <span className="muted">Odešle se po vytvoření zákaznické rezervace, ještě před jejím schválením. Interní blokace SMS nespouští.</span>
+                      </div>
+                      <label style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: "8px" }}>
+                        <input type="checkbox" checked={bookingSettings.smsAdminNotificationEnabled} onChange={(event) => setBookingSettings((current) => ({ ...current, smsAdminNotificationEnabled: event.target.checked }))} />
+                        Posílat správcům
+                      </label>
+                    </div>
+                    <fieldset style={{ border: "1px solid var(--line)", borderRadius: "10px", padding: "14px", minWidth: 0 }}>
+                      <legend>Příjemci SMS v tomto klubu</legend>
+                      <p className="muted">Označte správce, kterým má přijít upozornění. Telefon upravíte níže v sekci Admin zaměstnanci. Na stejné číslo se odešle jen jedna SMS.</p>
+                      {bookingSettings.smsAdminRecipients.length === 0 && <p className="muted">V klubu nejsou dostupní žádní správci.</p>}
+                      {bookingSettings.smsAdminRecipients.map((admin) => {
+                        const selected = bookingSettings.smsAdminRecipientIds.includes(admin.id);
+                        return <label key={admin.id} style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: "10px", marginTop: "10px" }}>
+                          <input type="checkbox" checked={selected} disabled={!admin.canReceiveSms && !selected} onChange={(event) => setBookingSettings((current) => ({ ...current, smsAdminRecipientIds: event.target.checked ? [...current.smsAdminRecipientIds, admin.id] : current.smsAdminRecipientIds.filter((id) => id !== admin.id) }))} />
+                          <span><strong>{admin.firstName} {admin.lastName}</strong><br /><small className="muted">{admin.phone || "Telefon není vyplněn"}{!admin.canReceiveSms && " · Doplňte platný telefon"}</small></span>
+                        </label>;
+                      })}
+                    </fieldset>
+                    <label>
+                      Text SMS pro správce
+                      <textarea className="field" rows="4" maxLength="600" value={bookingSettings.smsAdminNotificationTemplate} onChange={(event) => setBookingSettings((current) => ({ ...current, smsAdminNotificationTemplate: event.target.value }))} />
+                      <span className="muted" style={{ fontSize: "12px" }}>Proměnné: {"{{companyName}}"}, {"{{firstName}}"}, {"{{lastName}}"}, {"{{email}}"}, {"{{phone}}"}, {"{{date}}"}, {"{{weekday}}"}, {"{{time}}"}, {"{{timeRange}}"}, {"{{timeFrom}}"}, {"{{timeTo}}"}, {"{{resource}}"}, {"{{reservationId}}"}, {"{{totalPrice}}"}. Čas je celý interval, např. 09:00 - 10:30.</span>
+                    </label>
+                    <p className="muted">Uložením nastavení se žádná SMS neposílá. Přehled zpracovaných zpráv najdete v E-maily a SMS → SMS logy.</p>
+                    {bookingSettings.smsAdminNotificationEnabled && bookingSettings.smsAdminRecipientIds.length === 0 && <p className="errorText" role="alert">Vyberte alespoň jednoho správce s platným telefonem.</p>}
+                    {bookingSettings.smsAdminNotificationEnabled && !bookingSettings.smsApiKeyConfigured && !bookingSettings.smsApiKey.trim() && <p className="errorText" role="alert">Pro odesílání SMS vložte společný API klíč SmsManager výše.</p>}
+                  </div>
+
                   <div className="actionsRight">
-                    <button className="primaryBtn" type="submit" disabled={bookingSettingsLoading}>
+                    <button className="primaryBtn" type="submit" disabled={bookingSettingsLoading || (bookingSettings.smsAdminNotificationEnabled && (bookingSettings.smsAdminRecipientIds.length === 0 || (!bookingSettings.smsApiKeyConfigured && !bookingSettings.smsApiKey.trim())))}>
                       {bookingSettingsLoading ? "Ukládám..." : "Uložit pravidla"}
                     </button>
                   </div>
@@ -5706,10 +6106,9 @@ function AdminDashboardPage() {
 export default function App() {
   const path = window.location.pathname;
   const cancelToken = new URLSearchParams(window.location.search).get("cancelToken");
+  const adminActionToken = new URLSearchParams(window.location.search).get("adminActionToken");
 
-  useEffect(() => {
-    applyThemeToDocument(DEFAULT_CLUB_THEME);
-  }, [path]);
+  if (adminActionToken) return <ReservationActionPage token={adminActionToken} />;
 
   if (cancelToken) {
     return <CancellationPage token={cancelToken} />;

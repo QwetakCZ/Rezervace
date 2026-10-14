@@ -34,17 +34,50 @@ class Mailer
         ][(int)$parsed->format('N')] ?? '';
     }
 
+    /** Souvislé intervaly, včetně skutečného konce posledního bloku. */
+    public static function timeVariables(array $reservation): array
+    {
+        $rows = $reservation['detailSlots'] ?? [];
+        if (!$rows) {
+            foreach ($reservation['slotStarts'] ?? [] as $start) {
+                $date = (string)($reservation['date'] ?? '');
+                $end = DateTimeImmutable::createFromFormat('!H:i:s', strlen($start) === 5 ? $start.':00' : $start);
+                if (!$end) continue;
+                $rows[] = ['date'=>$date, 'time_start'=>$start, 'time_end'=>$end->modify('+'.max(1,(int)($reservation['slotMinutes'] ?? 30)).' minutes')->format('H:i:s')];
+            }
+        }
+        $days = [];
+        foreach ($rows as $row) $days[$row['date'] ?? ''][] = [substr($row['time_start'],0,5), substr($row['time_end'],0,5)];
+        ksort($days);
+        $ranges = []; $first = ''; $last = '';
+        foreach ($days as $date=>$intervals) {
+            usort($intervals, fn($a,$b)=>strcmp($a[0],$b[0]));
+            $merged = [];
+            foreach ($intervals as [$start,$end]) {
+                $index = count($merged)-1;
+                if ($index >= 0 && $start <= $merged[$index][1]) $merged[$index][1] = max($merged[$index][1],$end);
+                else $merged[] = [$start,$end];
+            }
+            foreach ($merged as [$start,$end]) {
+                if ($first === '') $first = $start;
+                $last = $end;
+                $ranges[] = (count($days)>1 ? $date.' ' : '').$start.' - '.$end;
+            }
+        }
+        return ['time'=>implode(', ',$ranges), 'timeRange'=>implode(', ',$ranges), 'timeFrom'=>$first, 'timeTo'=>$last];
+    }
+
     /**
      * Odešle email a zaloguje do DB
      */
-    public function send(string $to, string $subject, string $bodyHtml, int $companyId, ?int $reservationId, string $type, string $recipientName = ''): bool
+    public function send(string $to, string $subject, string $bodyHtml, int $companyId, ?int $reservationId, string $type, string $recipientName = '', ?string $replyTo = null): bool
     {
         $messageId = sprintf('<%s.%s@%s>', $type, time(), parse_url('https://rezervace.tt-denik.cz', PHP_URL_HOST));
         $headers = [
             'MIME-Version: 1.0',
             'Content-Type: text/html; charset=utf-8',
             'From: ' . $this->fromName . ' <' . $this->fromEmail . '>',
-            'Reply-To: ' . $this->fromEmail,
+            'Reply-To: ' . ($replyTo && filter_var($replyTo,FILTER_VALIDATE_EMAIL) ? $replyTo : $this->fromEmail),
             'Return-Path: ' . $this->fromEmail,
             'Message-ID: ' . $messageId,
             'X-Mailer: RezervacniSystem/1.0',
@@ -69,16 +102,26 @@ class Mailer
         return $sent;
     }
 
+    /** Provozní zpráva jednomu příjemci; nesdílí adresy dalších kontaktů. */
+    public function sendDirectoryMessage(array $company, array $contact, string $subject, string $message, string $replyTo): bool
+    {
+        $safe=fn($value)=>htmlspecialchars((string)$value,ENT_QUOTES,'UTF-8');
+        $body="<!DOCTYPE html><html><head><meta charset='utf-8'><style>{$this->style()}</style></head><body><div class='card'><h2>".$safe($company['name'])."</h2><div style='color:#333;font-size:15px;line-height:1.6'>".nl2br($safe($message))."</div><div class='footer'>Zpráva od administrátora klubu ".$safe($company['name']).". Odpovědět můžete přímo na tento e-mail.</div></div></body></html>";
+        return $this->send($contact['email'],$subject,$body,(int)$company['id'],null,'directory_message',trim($contact['firstName'].' '.$contact['lastName']),$replyTo);
+    }
+
     /**
      * Email pro adminy — notifikace o nové rezervaci
      */
     public function sendAdminNotification(array $company, array $admins, array $reservation, int $reservationId): void
     {
         $subject = "Nová rezervace – {$company['name']}";
-        $body = $this->buildAdminEmail($company, $reservation);
-
         foreach ($admins as $admin) {
             if (!empty($admin['email'])) {
+                $ref = $reservation;
+                $ref['approveUrl'] = $reservation['adminActions'][(int)$admin['id']]['approve'] ?? '';
+                $ref['adminCancelUrl'] = $reservation['adminActions'][(int)$admin['id']]['cancel'] ?? '';
+                $body = $this->buildAdminEmail($company, $ref);
                 $name = trim(($admin['first_name'] ?? '') . ' ' . ($admin['last_name'] ?? ''));
                 $this->send($admin['email'], $subject, $body, (int)$company['id'], $reservationId, 'admin_notification', $name);
             }
@@ -110,6 +153,7 @@ class Mailer
                 'note' => $reservation['note'] ?? '',
                 'cancelUrl' => $reservation['cancelUrl'] ?? '',
             ];
+            $vars = array_merge($vars, self::timeVariables($reservation));
             $subject = $this->replaceVars($tpl['subject'], $vars);
             $body = $this->replaceVars($tpl['bodyHtml'], $vars);
             // Starší uložené šablony nemusí znát {{cancelUrl}}. Odkaz proto
@@ -154,6 +198,7 @@ class Mailer
                 'totalPrice' => number_format((float)($reservation['totalPrice'] ?? 0), 0, ',', ' '),
                 'note' => $reservation['note'] ?? '',
             ];
+            $vars = array_merge($vars, self::timeVariables($reservation));
             $subject = $this->replaceVars($tpl['subject'], $vars);
             $body = $this->replaceVars($tpl['bodyHtml'], $vars);
         } else {
@@ -189,6 +234,7 @@ class Mailer
                 'note' => $reservation['note'] ?? '',
                 'reason' => $reason ?: 'Zrušeno administrátorem',
             ];
+            $vars = array_merge($vars, self::timeVariables($reservation));
             $subject = $this->replaceVars($tpl['subject'], $vars);
             $body = $this->replaceVars($tpl['bodyHtml'], $vars);
         } else {
@@ -212,6 +258,7 @@ class Mailer
             'slots'=>implode(', ',array_map(fn($s)=>substr($s,0,5),$slots)),
             'slotCount'=>(string)count($slots), 'reason'=>$reason?:'Rezervace nebyla schválena',
         ];
+        $vars = array_merge($vars, self::timeVariables($reservation));
         $tpl=$this->getTemplate($cid,'rejection');
         if($tpl){$subject=$this->replaceVars($tpl['subject'],$vars);$body=$this->replaceVars($tpl['bodyHtml'],$vars);}
         else{
@@ -231,7 +278,25 @@ class Mailer
         $date=htmlspecialchars((string)($reservation['date']??''),ENT_QUOTES,'UTF-8');
         $body="<!DOCTYPE html><html><head><meta charset='utf-8'><style>{$this->style()}</style></head><body><div class='card'><h2>Storno potvrzeno</h2><p>Vaše rezervace v <strong>{$companyName}</strong> byla zrušena a termín je znovu volný.</p><table><tr><th>Datum</th><td>{$date}</td></tr><tr><th>Časy</th><td>".htmlspecialchars($slotList,ENT_QUOTES,'UTF-8')."</td></tr></table><div class='footer'>Rezervační systém • {$companyName}</div></div></body></html>";
         $name=trim(($customer['firstName']??'').' '.($customer['lastName']??''));
-        $this->send($customer['email'],"Storno rezervace potvrzeno – {$company['name']}",$body,(int)$company['id'],$reservationId,'customer_cancellation',$name);
+        $vars = array_merge(self::timeVariables($reservation), [
+            'companyName'=>$company['name'], 'firstName'=>$customer['firstName']??'', 'lastName'=>$customer['lastName']??'',
+            'email'=>$customer['email']??'', 'phone'=>$customer['phone']??'', 'date'=>$reservation['date']??'',
+            'weekday'=>self::weekdayName((string)($reservation['date']??'')), 'slots'=>$slotList,
+            'slotCount'=>(string)count($slots), 'reason'=>'Zrušeno zákazníkem',
+        ]);
+        $tpl = $this->getTemplate((int)$company['id'], 'customer_cancellation');
+        $subject = $tpl ? $this->replaceVars($tpl['subject'],$vars) : "Storno rezervace potvrzeno – {$company['name']}";
+        if ($tpl) $body = $this->replaceVars($tpl['bodyHtml'],$vars);
+        $this->send($customer['email'],$subject,$body,(int)$company['id'],$reservationId,'customer_cancellation',$name);
+
+        $tpl = $this->getTemplate((int)$company['id'], 'admin_customer_cancellation');
+        $subject = $tpl ? $this->replaceVars($tpl['subject'],$vars) : "Zákazník stornoval rezervaci – {$company['name']}";
+        $body = $tpl ? $this->replaceVars($tpl['bodyHtml'],$vars) : $this->replaceVars(
+            "<!DOCTYPE html><html><head><meta charset='utf-8'><style>{$this->style()}</style></head><body><div class='card'><h2>Zákazník stornoval rezervaci</h2><p>{{firstName}} {{lastName}} ({{email}}) zrušil rezervaci v {{companyName}}.</p><table><tr><th>Datum</th><td>{{weekday}} {{date}}</td></tr><tr><th>Čas</th><td>{{time}}</td></tr></table><p>Termín je opět volný.</p></div></body></html>", $vars);
+        $admins = DB::query("SELECT email,first_name,last_name FROM users WHERE company_id=? AND role='admin' AND notify_emails=1", [(int)$company['id']]);
+        foreach ($admins as $admin) {
+            if (!empty($admin['email'])) $this->send($admin['email'],$subject,$body,(int)$company['id'],$reservationId,'admin_customer_cancellation',trim($admin['first_name'].' '.$admin['last_name']));
+        }
     }
 
     // --- HTML šablony ---
@@ -285,8 +350,12 @@ class Mailer
     private function buildAdminEmail(array $company, array $reservation): string
     {
         $s = $this->style();
+        $company['name'] = htmlspecialchars((string)$company['name'],ENT_QUOTES,'UTF-8');
+        foreach (['firstName','lastName','email','phone','note','date'] as $field) {
+            $reservation[$field] = htmlspecialchars((string)($reservation[$field]??''),ENT_QUOTES,'UTF-8');
+        }
         $slots = $reservation['slotStarts'] ?? [];
-        $slotList = implode(', ', array_map(fn($s) => substr($s, 0, 5), $slots));
+        $slotList = htmlspecialchars(self::timeVariables($reservation)['time'],ENT_QUOTES,'UTF-8');
         $count = count($slots); $slotMinutes=(int)($reservation['slotMinutes']??30);
 
         return "<!DOCTYPE html><html><head><meta charset='utf-8'><style>{$s}</style></head><body>"
@@ -303,7 +372,8 @@ class Mailer
             . "<tr><th>Cena</th><td class='price'>" . number_format($reservation['totalPrice'], 0, ',', ' ') . " Kč</td></tr>"
             . "</table>"
             . ($reservation['note'] ? "<div class='note'>📝 Poznámka: {$reservation['note']}</div>" : "")
-            . "<p style='margin-top:12px;color:#888;font-size:13px'>Přihlaste se do <a href='https://rezervace.tt-denik.cz/admin/dashboard'>admin dashboardu</a> pro správu rezervací.</p>"
+            . (!empty($reservation['approveUrl']) ? "<p><a style='display:inline-block;padding:12px;border-radius:8px;background:#10b981;color:#fff;text-decoration:none' href='".htmlspecialchars($reservation['approveUrl'],ENT_QUOTES,'UTF-8')."'>Schválit rezervaci</a> <a style='display:inline-block;padding:12px;border-radius:8px;background:#e11d48;color:#fff;text-decoration:none' href='".htmlspecialchars($reservation['adminCancelUrl'],ENT_QUOTES,'UTF-8')."'>Stornovat rezervaci</a></p>" : '')
+            . "<p style='margin-top:12px;color:#888;font-size:13px'>Rezervaci můžete spravovat také v <a href='https://rezervace.tt-denik.cz/admin/dashboard'>administraci</a>.</p>"
             . "<div class='footer'>Tento email byl vygenerován automaticky rezervačním systémem.</div>"
             . "</div></body></html>";
     }
@@ -337,7 +407,7 @@ class Mailer
     {
         $s = $this->style();
         $slots = $reservation['slotStarts'] ?? [];
-        $slotList = implode(', ', array_map(fn($s) => substr($s, 0, 5), $slots));
+        $slotList = htmlspecialchars(self::timeVariables($reservation)['time'],ENT_QUOTES,'UTF-8');
 
         return "<!DOCTYPE html><html><head><meta charset='utf-8'><style>{$s}</style></head><body>"
             . "<div class='card'>"

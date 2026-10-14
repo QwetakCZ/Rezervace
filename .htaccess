@@ -16,7 +16,14 @@
 </IfModule>
 
 <IfModule mod_headers.c>
-  # Cache static assets
+  # Verzované assety mohou zůstat dlouhodobě v cache.
   Header set Cache-Control "max-age=31536000" "expr=%{REQUEST_URI} =~ /\.(js|css)$/"
-  Header set Cache-Control "max-age=0" "expr=%{REQUEST_URI} =~ /\.html$/"
+
+  # Vstupní SPA dokument se servíruje také pro URL "/", kde REQUEST_URI
+  # nekončí na .html. FilesMatch proto zajistí vždy čerstvý odkaz na build.
+  <FilesMatch "^index\.html$">
+    Header set Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+    Header set Pragma "no-cache"
+    Header set Expires "0"
+  </FilesMatch>
 </IfModule>

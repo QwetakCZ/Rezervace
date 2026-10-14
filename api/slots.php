@@ -92,18 +92,23 @@ class Slots
         array $resources,
         array $reservedSlotRows
     ): array {
-        // Vytvoří lookup: "resourceId|timeStart" => true
+        // Kontrola překryvu chrání i rezervace po změně začátku časových oken.
         $reservedLookup = [];
         foreach ($reservedSlotRows as $row) {
-            $key = $row['resource_id'] . '|' . self::normalizeTime($row['time_start']);
-            $reservedLookup[$key] = true;
+            $reservedLookup[(int)$row['resource_id']][] = $row;
         }
 
         return array_map(function ($resource) use ($reservedLookup) {
             $resourceId = $resource['resource_id'] ?? $resource['id'] ?? 0;
             $resource['slots'] = array_map(function ($slot) use ($resourceId, $reservedLookup) {
-                $key = $resourceId . '|' . $slot['time_start'];
-                $slot['reserved'] = isset($reservedLookup[$key]);
+                $slot['reserved'] = false;
+                foreach ($reservedLookup[$resourceId] ?? [] as $busy) {
+                    $start = self::normalizeTime($busy['time_start']);
+                    $end = isset($busy['time_end']) ? self::normalizeTime($busy['time_end']) : '';
+                    if ($end ? ($start < $slot['time_end'] && $end > $slot['time_start']) : ($start === $slot['time_start'])) {
+                        $slot['reserved'] = true; break;
+                    }
+                }
                 $slot['available'] = !$slot['reserved'];
                 return $slot;
             }, $resource['slots'] ?? []);

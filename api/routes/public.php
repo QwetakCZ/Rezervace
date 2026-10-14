@@ -89,7 +89,7 @@ if ($path === '/availability') {
         ];
     }, $resources);
 
-    $reserved = DB::query("SELECT resource_id, time_start FROM reservation_slots WHERE date=? AND resource_id IN (SELECT id FROM resources WHERE category_id=?)", [$date, $catId]);
+    $reserved = DB::query("SELECT resource_id, time_start, time_end FROM reservation_slots WHERE date=? AND resource_id IN (SELECT id FROM resources WHERE category_id=?)", [$date, $catId]);
     $rwa = Slots::groupSlotsByResource($rwc, $reserved);
     $ltf = Slots::filterSlotsByLeadTime($rwa, $date, $bs['minAdvanceMinutes']);
 
@@ -148,12 +148,14 @@ if ($path === '/reservations/cancel' && $method === 'PATCH') {
     if (!$slots) errOut('Rezervace už nemá aktivní termín.', 409);
     DB::beginTransaction();
     try {
-        DB::exec("UPDATE reservations SET status='cancelled',cancelled_by='customer',cancelled_at=NOW(),cancel_token_hash=NULL,note=CONCAT(IFNULL(note,''),'\n[storno zákazníkem]') WHERE id=?", [(int)$row['id']]);
+        if (DB::exec("UPDATE reservations SET status='cancelled',cancelled_by='customer',cancelled_at=NOW(),cancel_token_hash=NULL,note=CONCAT(IFNULL(note,''),'\n[storno zákazníkem]') WHERE id=? AND status IN ('pending','confirmed') AND cancel_token_hash=?", [(int)$row['id'],hash('sha256',$token)]) !== 1) {
+            DB::rollback(); errOut('Rezervace už byla stornována nebo vyřízena.',409);
+        }
         DB::exec('DELETE FROM reservation_slots WHERE reservation_id=?', [(int)$row['id']]);
         DB::commit();
     } catch (\Throwable $e) { DB::rollback(); errOut('Storno se nepodařilo uložit.', 500); }
     try {
-        $ref=['date'=>$slots[0]['date'],'slotStarts'=>array_column($slots,'time_start')];
+        $ref=['date'=>$slots[0]['date'],'slotStarts'=>array_column($slots,'time_start'),'detailSlots'=>$slots];
         $mailer->sendCustomerCancellationConfirmation(
             ['id'=>(int)$row['company_id'],'name'=>$row['company_name']],
             ['firstName'=>$row['first_name'],'lastName'=>$row['last_name'],'email'=>$row['email']],
@@ -176,6 +178,22 @@ if ($path === '/reservations' && $method === 'POST') {
 
     if (!$catId || !$resId || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) || !is_array($slots) || empty($slots) || !$fn || !$ln || !$em)
         errOut('Neplatná data rezervace.');
+    if (!filter_var($em, FILTER_VALIDATE_EMAIL)) errOut('Zadejte platnou e-mailovou adresu.');
+    if (mb_strlen($fn) > 100 || mb_strlen($ln) > 100 || mb_strlen($ph) > 50) errOut('Kontaktní údaje jsou příliš dlouhé.');
+
+    // Přihlášený hráč je vlastníkem rezervace i tehdy, když ji vyplňuje
+    // pro jinou osobu. Kontaktní údaje konkrétní rezervace zůstávají v jejím snapshotu.
+    $authenticatedPlayerId = null;
+    $playerToken = Auth::extractBearerToken();
+    if ($playerToken !== '') {
+        $playerPayload = $auth->verifyToken($playerToken);
+        if (!$playerPayload || strtolower((string)($playerPayload['role'] ?? '')) !== 'player' || (int)($playerPayload['companyId'] ?? 0) !== $fcid) {
+            errOut('Přihlášení hráče už není platné. Přihlaste se znovu.', 401);
+        }
+        $playerOwner = DB::queryOne("SELECT id FROM users WHERE id=? AND company_id=? AND role='player' AND password_hash<>'' LIMIT 1", [(int)$playerPayload['sub'], $fcid]);
+        if (!$playerOwner) errOut('Hráčský účet už není aktivní.', 401);
+        $authenticatedPlayerId = (int)$playerOwner['id'];
+    }
 
     try {
         $dow = Slots::dayOfWeekForPricing($date);
@@ -212,15 +230,17 @@ if ($path === '/reservations' && $method === 'POST') {
         DB::beginTransaction();
 
         if (!DB::queryOne('SELECT id FROM categories WHERE id=? AND company_id=? LIMIT 1', [$catId, $fcid])) { DB::rollback(); errOut('Kategorie neexistuje.', 404); }
-        if (!DB::queryOne('SELECT id FROM resources WHERE id=? AND category_id=? AND is_active=1 LIMIT 1', [$resId, $catId])) { DB::rollback(); errOut('Prostředky neodpovídají kategorii.'); }
+        if (!DB::queryOne('SELECT id FROM resources WHERE id=? AND category_id=? AND is_active=1 LIMIT 1 FOR UPDATE', [$resId, $catId])) { DB::rollback(); errOut('Prostředky neodpovídají kategorii.'); }
 
-        $eu = DB::queryOne('SELECT id FROM users WHERE email=? AND company_id=? LIMIT 1', [$em, $fcid]);
-        $uid = $eu ? (int)$eu['id'] : DB::insert("INSERT INTO users (company_id,role,email,password_hash,first_name,last_name,phone,current_credit) VALUES (?,'player',?,'',?,?,?,0.00)", [$fcid, $em, $fn, $ln, $ph ?: null]);
+        if ($authenticatedPlayerId) {
+            $uid = $authenticatedPlayerId;
+        } else {
+            $eu = DB::queryOne('SELECT id FROM users WHERE email=? AND company_id=? LIMIT 1', [$em, $fcid]);
+            $uid = $eu ? (int)$eu['id'] : DB::insert("INSERT INTO users (company_id,role,email,password_hash,first_name,last_name,phone,current_credit) VALUES (?,'player',?,'',?,?,?,0.00)", [$fcid, $em, $fn, $ln, $ph ?: null]);
+        }
 
         // Check conflicts
-        $timeList = array_map(fn($s) => $s . ':00', $uss);
-        $inPlaceholders = implode(',', array_fill(0, count($timeList), '?'));
-        $conflicts = DB::query("SELECT time_start FROM reservation_slots WHERE resource_id=? AND date=? AND time_start IN ($inPlaceholders)", array_merge([$resId, $date], $timeList));
+        $conflicts = DB::query('SELECT time_start FROM reservation_slots WHERE resource_id=? AND date=? AND time_start<? AND time_end>?', [$resId,$date,$sel[count($sel)-1]['time_end'],$sel[0]['time_start']]);
         if (!empty($conflicts)) { DB::rollback(); errOut('Některé vybrané časy už byly zarezervovány.'); }
 
         $cancelToken = bin2hex(random_bytes(32));
@@ -243,8 +263,16 @@ if ($path === '/reservations' && $method === 'POST') {
         try {
             $company = DB::queryOne('SELECT id, name FROM companies WHERE id=? LIMIT 1', [$fcid]);
             if ($company) {
-                $admins = DB::query("SELECT email, first_name, last_name FROM users WHERE company_id=? AND role='admin' AND notify_emails=1", [$fcid]);
+                $admins = DB::query("SELECT id,email,first_name,last_name FROM users WHERE company_id=? AND role='admin' AND notify_emails=1", [$fcid]);
                 $resInfo = ['date' => $date, 'slotStarts' => $uss, 'slotMinutes'=>$sm, 'totalPrice' => $tp, 'firstName' => $fn, 'lastName' => $ln, 'email' => $em, 'phone' => $ph, 'note' => $note, 'cancelUrl'=>appUrl($config).'/?cancelToken='.rawurlencode($cancelToken)];
+                $resInfo['detailSlots'] = reservationSlots($reservationId);
+                $expiresAt = min(time()+7*86400, strtotime($date.' '.$uss[0]));
+                foreach ($admins as $admin) {
+                    foreach (['approve','cancel'] as $action) {
+                        $actionToken = reservationActionToken($reservationId,$fcid,(int)$admin['id'],$action,$expiresAt,(string)$config['auth']['secret']);
+                        $resInfo['adminActions'][(int)$admin['id']][$action] = appUrl($config).'/?adminActionToken='.rawurlencode($actionToken);
+                    }
+                }
                 $custInfo = ['firstName' => $fn, 'lastName' => $ln, 'email' => $em];
                 $mailer->sendAdminNotification($company, $admins, $resInfo, $reservationId);
                 $mailer->sendCustomerSummary($company, $custInfo, $resInfo, $reservationId);
@@ -253,7 +281,9 @@ if ($path === '/reservations' && $method === 'POST') {
             // emaily selhaly — nevadí, rezervace je uložená
         }
 
-        jsonOut(['status' => 'success', 'message' => 'Rezervace byla úspěšně vytvořena.', 'reservationId' => $reservationId, 'totalPrice' => $tp], 201);
+        // SMS správcům až po commitu, nezávisle na úspěchu odeslání e-mailů.
+        try { $smsManager->sendAdminNewReservation($fcid, $reservationId); } catch (\Throwable $e) { /* Notifikace nesmí zablokovat uloženou rezervaci. */ }
+        jsonOut(['status' => 'pending', 'message' => 'Rezervace byla přijata a čeká na schválení.', 'reservationId' => $reservationId, 'totalPrice' => $tp], 201);
     } catch (\Throwable $e) {
         DB::rollback(); errOut('Nepodařilo se vytvořit rezervaci: ' . $e->getMessage(), 500);
     }

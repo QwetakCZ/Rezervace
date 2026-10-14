@@ -146,6 +146,43 @@ if (preg_match('#^/admin/pricing-windows/(\d+)$#', $path, $m)) {
         $tfR = $b['timeFrom'] ?? null; $ttR = $b['timeTo'] ?? null;
         $ppsR = $b['pricePerSlot'] ?? null; $ridR = $b['resourceId'] ?? null;
 
+        // Hromadná editace upraví odpovídající původní okna vybraných zdrojů.
+        // Ostatní časy v rozvrhu zůstávají zachované.
+        if (array_key_exists('resourceIds',$b)) {
+            if ($catId && $catId !== (int)$ex['category_id']) errOut('Při hromadné úpravě nelze změnit typ rezervace.');
+            $targetIds = array_values(array_unique(array_map('intval',is_array($b['resourceIds']) ? $b['resourceIds'] : [])));
+            if (!$targetIds || in_array(0,$targetIds,true)) errOut('Vyberte alespoň jeden stůl nebo trenéra.');
+            $placeholders = implode(',',array_fill(0,count($targetIds),'?'));
+            $valid = DB::query("SELECT id FROM resources WHERE category_id=? AND id IN ($placeholders)",array_merge([(int)$ex['category_id']],$targetIds));
+            if (count($valid)!==count($targetIds)) errOut('Výběr obsahuje zdroj z jiného typu rezervace.',403);
+            $day = (int)($dowR ?? $ex['day_of_week']);
+            $from = normTime((string)($tfR ?? $ex['time_from']));
+            $to = normTime((string)($ttR ?? $ex['time_to']));
+            $price = (float)($ppsR ?? $ex['price_per_slot']);
+            if ($day<1 || $day>7 || !$from || !$to || $from>=$to || $price<0) errOut('Zadejte platný den, časový rozsah a cenu.');
+            DB::beginTransaction();
+            try {
+                foreach ($targetIds as $targetId) {
+                    $matches = DB::query('SELECT id FROM pricing_windows WHERE category_id=? AND resource_id=? AND day_of_week=? AND time_from=? AND time_to=?',
+                        [(int)$ex['category_id'],$targetId,(int)$ex['day_of_week'],$ex['time_from'],$ex['time_to']]);
+                    if ($matches) foreach ($matches as $match) DB::exec('UPDATE pricing_windows SET day_of_week=?,time_from=?,time_to=?,price_per_slot=? WHERE id=?',[$day,$from,$to,$price,(int)$match['id']]);
+                    else DB::insert('INSERT INTO pricing_windows (category_id,resource_id,day_of_week,time_from,time_to,price_per_slot) VALUES (?,?,?,?,?,?)',[(int)$ex['category_id'],$targetId,$day,$from,$to,$price]);
+                }
+                // Sdílené původní okno nahradíme konkrétními okny včetně
+                // původních hodnot pro zdroje, které administrátor nevybral.
+                if ($ex['resource_id']===null) {
+                    $otherResources = DB::query('SELECT id FROM resources WHERE category_id=?',[(int)$ex['category_id']]);
+                    foreach ($otherResources as $other) {
+                        if (in_array((int)$other['id'],$targetIds,true)) continue;
+                        DB::insert('INSERT INTO pricing_windows (category_id,resource_id,day_of_week,time_from,time_to,price_per_slot) VALUES (?,?,?,?,?,?)',[(int)$ex['category_id'],(int)$other['id'],(int)$ex['day_of_week'],$ex['time_from'],$ex['time_to'],$ex['price_per_slot']]);
+                    }
+                    DB::exec('DELETE FROM pricing_windows WHERE id=?',[$wid]);
+                }
+                DB::commit();
+            } catch (Throwable $e) { DB::rollback(); errOut('Hromadnou úpravu se nepodařilo uložit.',500); }
+            jsonOut(['ok'=>true,'updatedResources'=>count($targetIds)]);
+        }
+
         $f = []; $v = [];
         if ($catId) {
             $cat = DB::queryOne('SELECT id,company_id FROM categories WHERE id=? LIMIT 1', [$catId]);
@@ -157,7 +194,8 @@ if (preg_match('#^/admin/pricing-windows/(\d+)$#', $path, $m)) {
         if ($tfR !== null) { $t = normTime($tfR); if (!$t) errOut('Čas od nemá platný formát.'); $f[] = 'time_from=?'; $v[] = $t; }
         if ($ttR !== null) { $t = normTime($ttR); if (!$t) errOut('Čas do nemá platný formát.'); $f[] = 'time_to=?'; $v[] = $t; }
         if ($ppsR !== null) { $p = (float)$ppsR; if ($p < 0) errOut('Cena za slot musí být nezáporné číslo.'); $f[] = 'price_per_slot=?'; $v[] = $p; }
-        if ($ridR !== null) { $r = (int)$ridR; $f[] = 'resource_id=?'; $v[] = $r > 0 ? $r : null; }
+        if (array_key_exists('resourceId',$b)) { $r = (int)$ridR; $f[] = 'resource_id=?'; $v[] = $r > 0 ? $r : null; }
+        if (($tfR!==null || $ttR!==null) && normTime((string)($tfR??$ex['time_from'])) >= normTime((string)($ttR??$ex['time_to']))) errOut('Čas od musí být dřív než čas do.');
         if (empty($f)) errOut('Není co upravit.');
 
         $v[] = $wid;
@@ -175,6 +213,23 @@ if (preg_match('#^/admin/pricing-windows/(\d+)$#', $path, $m)) {
 }
 
 // /api/admin/booking-settings
+function adminSmsSettingsPayload(int $companyId, array $settings): array
+{
+    $ids = json_decode((string)($settings['sms_admin_recipient_ids'] ?? ''), true);
+    $ids = is_array($ids) ? array_map('intval', $ids) : [];
+    $admins = DB::query("SELECT id,first_name,last_name,email,phone FROM users WHERE company_id=? AND role='admin' ORDER BY first_name,last_name,id", [$companyId]);
+    return [
+        'smsAdminNotificationEnabled' => !empty($settings['sms_admin_notification_enabled']),
+        'smsAdminNotificationTemplate' => trim((string)($settings['sms_admin_notification_template'] ?? '')) ?: SmsManagerClient::DEFAULT_ADMIN_NOTIFICATION_TEMPLATE,
+        'smsAdminRecipientIds' => array_values(array_intersect($ids, array_map(fn($admin) => (int)$admin['id'], $admins))),
+        'smsAdminRecipients' => array_map(fn($admin) => [
+            'id' => (int)$admin['id'], 'firstName' => $admin['first_name'], 'lastName' => $admin['last_name'],
+            'email' => $admin['email'], 'phone' => $admin['phone'] ?? '',
+            'canReceiveSms' => SmsManagerClient::normalizePhone((string)($admin['phone'] ?? '')) !== '',
+        ], $admins),
+    ];
+}
+
 if ($path === '/admin/booking-settings') {
     $a = getAdmin($auth);
 
@@ -184,9 +239,9 @@ if ($path === '/admin/booking-settings') {
         if (!DB::queryOne('SELECT id FROM companies WHERE id=? LIMIT 1', [$cid])) errOut('Company neexistuje.', 404);
         if (!hasAccess($a, $cid)) errOut('K této company nemáte přístup.', 403);
         $settings = getBookingSettings($cid, $config['defaults']['min_advance_minutes']);
-        $sms = DB::queryOne('SELECT sms_enabled,sms_api_key_encrypted,sms_confirmation_template FROM company_booking_settings WHERE company_id=? LIMIT 1', [$cid]);
+        $sms = DB::queryOne('SELECT sms_enabled,sms_api_key_encrypted,sms_confirmation_template,sms_admin_notification_enabled,sms_admin_notification_template,sms_admin_recipient_ids FROM company_booking_settings WHERE company_id=? LIMIT 1', [$cid]);
         $encryptedKey = (string)($sms['sms_api_key_encrypted'] ?? '');
-        jsonOut(array_merge($settings, [
+        jsonOut(array_merge($settings, adminSmsSettingsPayload($cid, $sms ?? []), [
             'smsEnabled' => !empty($sms['sms_enabled']),
             'smsApiKeyConfigured' => $encryptedKey !== '',
             'smsApiKeyMasked' => $encryptedKey !== '' ? $smsManager->maskApiKey($encryptedKey) : '',
@@ -210,25 +265,45 @@ if ($path === '/admin/booking-settings') {
         if (!hasAccess($a, $cid)) errOut('K této company nemáte přístup.', 403);
 
         getBookingSettings($cid, $config['defaults']['min_advance_minutes']);
-        $current = DB::queryOne('SELECT sms_api_key_encrypted FROM company_booking_settings WHERE company_id=? LIMIT 1', [$cid]);
+        $current = DB::queryOne('SELECT sms_api_key_encrypted,sms_admin_notification_enabled,sms_admin_notification_template,sms_admin_recipient_ids FROM company_booking_settings WHERE company_id=? LIMIT 1', [$cid]);
+        // Starší klient bez nových polí nesmí přepsat nová nastavení.
+        $adminEnabled = !empty($b['smsAdminNotificationEnabled'] ?? $current['sms_admin_notification_enabled'] ?? false);
+        $adminTemplate = trim((string)($b['smsAdminNotificationTemplate'] ?? $current['sms_admin_notification_template'] ?? '')) ?: SmsManagerClient::DEFAULT_ADMIN_NOTIFICATION_TEMPLATE;
+        if (mb_strlen($adminTemplate) > 600) errOut('SMS šablona pro správce může mít nejvýše 600 znaků.');
+        $adminIds = $b['smsAdminRecipientIds'] ?? json_decode((string)($current['sms_admin_recipient_ids'] ?? '[]'), true) ?? [];
+        if (!is_array($adminIds) || count($adminIds) > 50) errOut('Vyberte nejvýše 50 správců pro SMS.');
+        foreach ($adminIds as $id) {
+            if ((!is_int($id) && !(is_string($id) && ctype_digit($id))) || (int)$id <= 0) errOut('Neplatný příjemce SMS.');
+        }
+        $adminIds = array_values(array_unique(array_map('intval', $adminIds))); sort($adminIds);
+        $selectedAdmins = [];
+        if ($adminIds) {
+            $ph = implode(',', array_fill(0, count($adminIds), '?'));
+            $selectedAdmins = DB::query("SELECT id,phone FROM users WHERE company_id=? AND role='admin' AND id IN ($ph)", array_merge([$cid], $adminIds));
+            if (count($selectedAdmins) !== count($adminIds)) errOut('SMS lze posílat pouze správcům tohoto klubu.');
+        }
+        if ($adminEnabled && !$adminIds) errOut('Vyberte alespoň jednoho správce pro SMS upozornění.');
+        if ($adminEnabled) {
+            foreach ($selectedAdmins as $admin) if (SmsManagerClient::normalizePhone((string)($admin['phone'] ?? '')) === '') errOut('Vybraný správce nemá platný telefon. Upravte jej v sekci Admin zaměstnanci.');
+        }
         $encryptedKey = (string)($current['sms_api_key_encrypted'] ?? '');
         if ($smsApiKey !== '') {
             $encryptedKey = $smsManager->encryptApiKey($smsApiKey);
         }
-        if ($smsEnabled && $encryptedKey === '') errOut('Nejprve vložte API klíč SMSManageru.');
+        if (($smsEnabled || $adminEnabled) && $encryptedKey === '') errOut('Nejprve vložte API klíč SMSManageru.');
 
         DB::exec(
-            'UPDATE company_booking_settings SET min_advance_minutes=?,sms_enabled=?,sms_api_key_encrypted=?,sms_confirmation_template=? WHERE company_id=?',
-            [$mam, $smsEnabled ? 1 : 0, $encryptedKey ?: null, $smsTemplate, $cid]
+            'UPDATE company_booking_settings SET min_advance_minutes=?,sms_enabled=?,sms_api_key_encrypted=?,sms_confirmation_template=?,sms_admin_notification_enabled=?,sms_admin_notification_template=?,sms_admin_recipient_ids=? WHERE company_id=?',
+            [$mam, $smsEnabled ? 1 : 0, $encryptedKey ?: null, $smsTemplate, $adminEnabled ? 1 : 0, $adminTemplate, json_encode($adminIds), $cid]
         );
-        jsonOut([
+        jsonOut(array_merge(adminSmsSettingsPayload($cid, ['sms_admin_notification_enabled' => $adminEnabled, 'sms_admin_notification_template' => $adminTemplate, 'sms_admin_recipient_ids' => json_encode($adminIds)]), [
             'companyId' => $cid,
             'minAdvanceMinutes' => $mam,
             'smsEnabled' => $smsEnabled,
             'smsApiKeyConfigured' => $encryptedKey !== '',
             'smsApiKeyMasked' => $encryptedKey !== '' ? $smsManager->maskApiKey($encryptedKey) : '',
             'smsConfirmationTemplate' => $smsTemplate,
-        ]);
+        ]));
     }
 
     errOut('Method not allowed.', 405);
@@ -239,37 +314,47 @@ if ($path === '/admin/reservations/recurring' && $method === 'POST') {
     $a=getAdmin($auth); if(isSA($a)) errOut('Vyberte admina konkrétní company.',403);
     $b=getJson();
     $catId=(int)($b['categoryId']??0); $resourceId=(int)($b['resourceId']??0);
+    $allResources = !empty($b['allResources']);
     $startDate=trim((string)($b['startDate']??'')); $startTime=normTime((string)($b['startTime']??''));
     $durationMinutes=(int)($b['durationMinutes']??0); $repeatEveryWeeks=(int)($b['repeatEveryWeeks']??0);
     $occurrences=(int)($b['occurrences']??0); $label=trim((string)($b['label']??'Interní rezervace'));
-    if(!$catId||!$resourceId||!preg_match('/^\d{4}-\d{2}-\d{2}$/',$startDate)||!$startTime) errOut('Vyplňte kategorii, zdroj, datum a čas.');
+    if(!$catId||(!$resourceId&&!$allResources)||!preg_match('/^\d{4}-\d{2}-\d{2}$/',$startDate)||!$startTime) errOut('Vyplňte kategorii, zdroj, datum a čas.');
     if($repeatEveryWeeks<1||$repeatEveryWeeks>12||$occurrences<1||$occurrences>52) errOut('Opakování musí být 1–12 týdnů a počet termínů 1–52.');
     $cat=DB::queryOne('SELECT id,company_id,default_slot_duration,min_booking_slots FROM categories WHERE id=? LIMIT 1',[$catId]);
     if(!$cat||!hasAccess($a,(int)$cat['company_id'])) errOut('Kategorie neexistuje nebo k ní nemáte přístup.',404);
-    $resource=DB::queryOne('SELECT id FROM resources WHERE id=? AND category_id=? AND is_active=1 LIMIT 1',[$resourceId,$catId]);
-    if(!$resource) errOut('Zdroj neexistuje nebo není aktivní.',404);
+    $resources = $allResources
+        ? DB::query('SELECT id,name FROM resources WHERE category_id=? AND is_active=1 ORDER BY id',[$catId])
+        : DB::query('SELECT id,name FROM resources WHERE id=? AND category_id=? AND is_active=1',[$resourceId,$catId]);
+    if(!$resources) errOut('Zdroj neexistuje nebo není aktivní.',404);
     $slotMinutes=max((int)$cat['default_slot_duration'],1); $minSlots=max((int)$cat['min_booking_slots'],1);
     if($durationMinutes<=0||$durationMinutes%$slotMinutes!==0) errOut("Délka musí být násobkem {$slotMinutes} minut.");
     $slotCount=(int)($durationMinutes/$slotMinutes);
     if($slotCount<$minSlots) errOut("Minimální délka je ".($minSlots*$slotMinutes).' minut.');
     $start=DateTimeImmutable::createFromFormat('!H:i:s',$startTime); if(!$start) errOut('Neplatný čas.');
+    if ($durationMinutes + ((int)$start->format('H')*60+(int)$start->format('i')) > 1440) errOut('Rezervace musí končit nejpozději o půlnoci.');
     $slotStarts=[]; for($i=0;$i<$slotCount;$i++){$slotStarts[]=$start->modify('+'.($i*$slotMinutes).' minutes')->format('H:i:s');}
-    $baseDate=DateTimeImmutable::createFromFormat('!Y-m-d',$startDate); if(!$baseDate) errOut('Neplatné datum.');
+    $baseDate=DateTimeImmutable::createFromFormat('!Y-m-d',$startDate); if(!$baseDate || $baseDate->format('Y-m-d')!==$startDate) errOut('Neplatné datum.');
     if($baseDate < new DateTimeImmutable('today')) errOut('První termín nesmí být v minulosti.');
     $hex=bin2hex(random_bytes(16)); $group=substr($hex,0,8).'-'.substr($hex,8,4).'-'.substr($hex,12,4).'-'.substr($hex,16,4).'-'.substr($hex,20);
     $created=[]; DB::beginTransaction();
     try{
+        foreach ($resources as $resource) DB::queryOne('SELECT id FROM resources WHERE id=? FOR UPDATE',[(int)$resource['id']]);
         for($i=0;$i<$occurrences;$i++){
             $date=$baseDate->modify('+'.($i*$repeatEveryWeeks).' weeks')->format('Y-m-d');
             $dow=Slots::dayOfWeekForPricing($date);
-            $windows=DB::query('SELECT resource_id,time_from,time_to FROM pricing_windows WHERE category_id=? AND day_of_week=? AND (resource_id IS NULL OR resource_id=?)',[$catId,$dow,$resourceId]);
-            $allowed=[]; foreach($windows as $window){foreach(Slots::buildSlotsForWindow($window['time_from'],$window['time_to'],$slotMinutes) as $slot){$allowed[$slot['time_start']]=$slot['time_end'];}}
-            foreach($slotStarts as $slotStart){if(!isset($allowed[$slotStart])) throw new RuntimeException("Termín $date $slotStart není v rezervačním okně.");}
-            $ph=implode(',',array_fill(0,count($slotStarts),'?'));
-            $conflict=DB::queryOne("SELECT id FROM reservation_slots WHERE resource_id=? AND date=? AND time_start IN ($ph) LIMIT 1",array_merge([$resourceId,$date],$slotStarts));
-            if($conflict) throw new RuntimeException("Termín $date koliduje s existující rezervací.");
+            foreach ($resources as $resource) {
+                $resourceId = (int)$resource['id'];
+                $windows=DB::query('SELECT resource_id,time_from,time_to FROM pricing_windows WHERE category_id=? AND day_of_week=? AND (resource_id IS NULL OR resource_id=?)',[$catId,$dow,$resourceId]);
+                $allowed=[]; foreach($windows as $window){foreach(Slots::buildSlotsForWindow($window['time_from'],$window['time_to'],$slotMinutes) as $slot){$allowed[$slot['time_start']]=$slot['time_end'];}}
+                foreach($slotStarts as $slotStart){if(!isset($allowed[$slotStart])) throw new RuntimeException("{$resource['name']}: termín $date $slotStart není v rezervačním okně.");}
+                $endTime = $allowed[$slotStarts[count($slotStarts)-1]];
+                $conflict=DB::queryOne('SELECT id FROM reservation_slots WHERE resource_id=? AND date=? AND time_start<? AND time_end>? LIMIT 1',[$resourceId,$date,$endTime,$startTime]);
+                if($conflict) throw new RuntimeException("{$resource['name']}: termín $date koliduje s existující rezervací.");
+            }
             $rid=DB::insert("INSERT INTO reservations (company_id,user_id,category_id,total_price,status,booking_type,label,recurrence_group,note) VALUES (?,?,?,0,'confirmed','internal',?,?,?)",[(int)$cat['company_id'],(int)$a['id'],$catId,$label?:'Interní rezervace',$group,$label?:null]);
-            foreach($slotStarts as $slotStart){$dt=DateTimeImmutable::createFromFormat('!H:i:s',$slotStart);$end=$dt->modify("+{$slotMinutes} minutes")->format('H:i:s');DB::exec('INSERT INTO reservation_slots (reservation_id,resource_id,date,time_start,time_end,price) VALUES (?,?,?,?,?,0)',[$rid,$resourceId,$date,$slotStart,$end]);}
+            foreach ($resources as $resource) {
+                foreach($slotStarts as $slotStart){DB::exec('INSERT INTO reservation_slots (reservation_id,resource_id,date,time_start,time_end,price) VALUES (?,?,?,?,?,0)',[$rid,(int)$resource['id'],$date,$slotStart,$allowed[$slotStart]]);}
+            }
             $created[]=['reservationId'=>$rid,'date'=>$date];
         }
         DB::commit();
@@ -277,12 +362,13 @@ if ($path === '/admin/reservations/recurring' && $method === 'POST') {
     jsonOut(['ok'=>true,'recurrenceGroup'=>$group,'created'=>$created],201);
 }
 
-// /api/admin/hall-blocks — jednorázové nebo opakované uzavření všech stolů / trenérů v typu rezervace
+// /api/admin/hall-blocks — uzavření vybraného typu rezervace nebo celé haly
 if ($path === '/admin/hall-blocks' && $method === 'POST') {
     $a = getAdmin($auth);
     if (isSA($a)) errOut('Vyberte administrátora konkrétního klubu.', 403);
     $b = getJson();
     $categoryId = (int)($b['categoryId'] ?? 0);
+    $wholeHall = ($b['wholeHall'] ?? false) === true;
     $label = trim((string)($b['label'] ?? 'Soukromá akce'));
     $mode = (string)($b['mode'] ?? 'single');
     $singleDate = trim((string)($b['singleDate'] ?? ''));
@@ -294,15 +380,21 @@ if ($path === '/admin/hall-blocks' && $method === 'POST') {
     $timeFrom = normTime((string)($b['timeFrom'] ?? ''));
     $timeTo = normTime((string)($b['timeTo'] ?? ''));
 
-    if (!$categoryId || $label === '') errOut('Vyberte typ rezervace a zadejte název akce.');
+    if ((!$wholeHall && !$categoryId) || $label === '') errOut('Vyberte typ rezervace nebo celou halu a zadejte název akce.');
     if (!in_array($mode, ['single', 'recurring'], true)) errOut('Neplatný režim blokace.');
-    if (!$allDay && (!$timeFrom || !$timeTo || $timeFrom >= $timeTo)) errOut('Zadejte platný časový rozsah akce.');
+    $validTime = fn($time) => preg_match('/^(?:[01][0-9]|2[0-3]):[0-5][0-9]:00$/D', $time);
+    if (!$allDay && (!$validTime($timeFrom) || !$validTime($timeTo) || $timeFrom >= $timeTo)) errOut('Zadejte platný časový rozsah akce.');
     if ($repeatEveryWeeks < 1 || $repeatEveryWeeks > 12) errOut('Opakování musí být po 1 až 12 týdnech.');
 
-    $category = DB::queryOne('SELECT id,company_id,name,default_slot_duration FROM categories WHERE id=? LIMIT 1', [$categoryId]);
-    if (!$category || !hasAccess($a, (int)$category['company_id'])) errOut('Typ rezervace neexistuje nebo k němu nemáte přístup.', 404);
-    $resources = DB::query('SELECT id,name FROM resources WHERE category_id=? AND is_active=1 ORDER BY id', [$categoryId]);
-    if (!$resources) errOut('Tento typ rezervace nemá žádné aktivní stoly ani trenéry.', 409);
+    if ($wholeHall) {
+        $categories = DB::query('SELECT id,company_id,name,default_slot_duration FROM categories WHERE company_id=? ORDER BY id', [(int)$a['company_id']]);
+    } else {
+        $category = DB::queryOne('SELECT id,company_id,name,default_slot_duration FROM categories WHERE id=? LIMIT 1', [$categoryId]);
+        if (!$category || !hasAccess($a, (int)$category['company_id'])) errOut('Typ rezervace neexistuje nebo k němu nemáte přístup.', 404);
+        $categories = [$category];
+    }
+    $resources = DB::query('SELECT r.id,r.name,r.category_id FROM resources r JOIN categories c ON c.id=r.category_id WHERE c.company_id=? AND r.is_active=1' . ($wholeHall ? '' : ' AND c.id=?') . ' ORDER BY r.id', $wholeHall ? [(int)$a['company_id']] : [(int)$a['company_id'], $categoryId]);
+    if (!$resources) errOut('Vybraná hala nebo typ rezervace nemá žádné aktivní stoly ani trenéry.', 409);
 
     $todayDate = new DateTimeImmutable('today');
     $dates = [];
@@ -330,52 +422,69 @@ if ($path === '/admin/hall-blocks' && $method === 'POST') {
 
     $hex = bin2hex(random_bytes(16));
     $group = substr($hex,0,8).'-'.substr($hex,8,4).'-'.substr($hex,12,4).'-'.substr($hex,16,4).'-'.substr($hex,20);
-    $slotMinutes = max((int)$category['default_slot_duration'], 1);
     $resourceIds = array_map(fn($resource) => (int)$resource['id'], $resources);
     $created = [];
 
     DB::beginTransaction();
     try {
+        foreach ($resources as $resource) DB::queryOne('SELECT id FROM resources WHERE id=? FOR UPDATE',[(int)$resource['id']]);
         foreach ($dates as $dateObject) {
             $date = $dateObject->format('Y-m-d');
             $dow = (int)$dateObject->format('N');
-            $windows = DB::query(
-                'SELECT resource_id,time_from,time_to FROM pricing_windows WHERE category_id=? AND day_of_week=? ORDER BY resource_id IS NULL DESC,time_from',
-                [$categoryId, $dow]
-            );
             $slotsToCreate = [];
-            foreach ($resources as $resource) {
-                $resourceId = (int)$resource['id'];
-                $allowed = [];
-                foreach ($windows as $window) {
-                    if ($window['resource_id'] !== null && (int)$window['resource_id'] !== $resourceId) continue;
-                    foreach (Slots::buildSlotsForWindow($window['time_from'], $window['time_to'], $slotMinutes) as $slot) {
-                        if (!$allDay && ($slot['time_start'] < $timeFrom || $slot['time_end'] > $timeTo)) continue;
-                        $allowed[$slot['time_start']] = $slot['time_end'];
+            foreach ($categories as $category) {
+                $categoryId = (int)$category['id'];
+                $categoryResources = array_filter($resources, fn($resource) => (int)$resource['category_id'] === $categoryId);
+                if (!$categoryResources) continue;
+                $slotMinutes = max((int)$category['default_slot_duration'], 1);
+                $windows = $wholeHall ? [] : DB::query(
+                    'SELECT resource_id,time_from,time_to FROM pricing_windows WHERE category_id=? AND day_of_week=? ORDER BY resource_id IS NULL DESC,time_from',
+                    [$categoryId, $dow]
+                );
+                foreach ($categoryResources as $resource) {
+                    $resourceId = (int)$resource['id'];
+                    if ($wholeHall) {
+                        // Interval platí i pro zdroje bez oken; nově otevřené okno nesmí obejít uzavření haly.
+                        $slotsToCreate[] = ['resourceId' => $resourceId, 'start' => $allDay ? '00:00:00' : $timeFrom, 'end' => $allDay ? '24:00:00' : $timeTo];
+                        continue;
                     }
-                }
-                foreach ($allowed as $slotStart => $slotEnd) {
-                    $slotsToCreate[] = ['resourceId' => $resourceId, 'start' => $slotStart, 'end' => $slotEnd];
+                    $allowed = [];
+                    foreach ($windows as $window) {
+                        if ($window['resource_id'] !== null && (int)$window['resource_id'] !== $resourceId) continue;
+                        foreach (Slots::buildSlotsForWindow($window['time_from'], $window['time_to'], $slotMinutes) as $slot) {
+                            if (!$allDay && ($slot['time_start'] >= $timeTo || $slot['time_end'] <= $timeFrom)) continue;
+                            $allowed[$slot['time_start']] = $slot['time_end'];
+                        }
+                    }
+                    foreach ($allowed as $slotStart => $slotEnd) {
+                        $slotsToCreate[] = ['resourceId' => $resourceId, 'start' => $slotStart, 'end' => $slotEnd];
+                    }
                 }
             }
             if (!$slotsToCreate) throw new RuntimeException("Pro datum {$date} nejsou v nastavené otevírací době žádné bloky.");
 
             $placeholders = implode(',', array_fill(0, count($resourceIds), '?'));
             $existing = DB::query(
-                "SELECT resource_id,time_start FROM reservation_slots WHERE date=? AND resource_id IN ($placeholders)",
+                "SELECT resource_id,time_start,time_end FROM reservation_slots WHERE date=? AND resource_id IN ($placeholders)",
                 array_merge([$date], $resourceIds)
             );
             $occupied = [];
-            foreach ($existing as $slot) $occupied[(int)$slot['resource_id'] . '|' . $slot['time_start']] = true;
+            foreach ($existing as $slot) $occupied[(int)$slot['resource_id']][] = $slot;
             foreach ($slotsToCreate as $slot) {
-                if (isset($occupied[$slot['resourceId'] . '|' . $slot['start']])) {
-                    throw new RuntimeException("Termín {$date} koliduje s existující rezervací. Nejdříve ji přesuňte nebo stornujte.");
+                foreach ($occupied[$slot['resourceId']] ?? [] as $busy) {
+                if ($busy['time_start'] < $slot['end'] && $busy['time_end'] > $slot['start']) {
+                    $resourceName = array_values(array_filter($resources, fn($resource) => (int)$resource['id'] === $slot['resourceId']))[0]['name'];
+                    throw new RuntimeException("{$resourceName}: termín {$date} koliduje s existující rezervací. Nejdříve ji přesuňte nebo stornujte.");
+                }
                 }
             }
 
+            // Celá hala je jedna akce: storno uvolní všechny její zdroje současně.
+            // category_id zůstává primárním typem; skutečný rozsah interní akce určuje seznam zdrojů.
+            $primaryCategoryId = $wholeHall ? (int)$resources[0]['category_id'] : $categoryId;
             $reservationId = DB::insert(
                 "INSERT INTO reservations (company_id,user_id,category_id,total_price,status,booking_type,label,recurrence_group,note) VALUES (?,?,?,0,'confirmed','internal',?,?,?)",
-                [(int)$category['company_id'], (int)$a['id'], $categoryId, $label, $group, '[uzavření haly] ' . $label]
+                [(int)$a['company_id'], (int)$a['id'], $primaryCategoryId, $label, $group, '[uzavření haly] ' . ($wholeHall ? '[celá hala] ' : '') . $label]
             );
             foreach ($slotsToCreate as $slot) {
                 DB::exec(
@@ -391,7 +500,7 @@ if ($path === '/admin/hall-blocks' && $method === 'POST') {
         errOut('Soukromou akci se nepodařilo uložit: ' . $e->getMessage(), 409);
     }
 
-    jsonOut(['ok' => true, 'recurrenceGroup' => $group, 'created' => $created], 201);
+    jsonOut(['ok' => true, 'wholeHall' => $wholeHall, 'occurrences' => count($dates), 'recurrenceGroup' => $group, 'created' => $created], 201);
 }
 
 // /api/admin/reservations
@@ -448,7 +557,7 @@ if ($path === '/admin/reservations/pending-count') {
 
 // /admin/reservations/:id/approve
 if (preg_match('#^/admin/reservations/(\d+)/approve$#', $path, $m) && $method === 'PATCH') {
-    $a = getAdmin($auth); $rid = (int)$m[1];
+    $a = $emailActionAdmin ?? getAdmin($auth); $rid = (int)$m[1];
     if (!$rid) errOut('Neplatné ID rezervace.');
     $ex = DB::queryOne(
         "SELECT r.id,r.company_id,r.status,r.user_id,r.total_price,r.booking_type,
@@ -462,14 +571,14 @@ if (preg_match('#^/admin/reservations/(\d+)/approve$#', $path, $m) && $method ==
     if (!$ex) errOut('Rezervace neexistuje.', 404);
     if (!isSA($a) && (int)$ex['company_id'] !== (int)$a['company_id']) errOut('K této rezervaci nemáte přístup.', 403);
     if ($ex['status'] !== 'pending') errOut('Schválit lze pouze čekající rezervaci.', 409);
-    DB::exec("UPDATE reservations SET status='confirmed' WHERE id=?", [$rid]);
+    if (DB::exec("UPDATE reservations SET status='confirmed' WHERE id=? AND status='pending'", [$rid]) !== 1) errOut('Rezervace už byla vyřízena.',409);
 
     // Poslat potvrzovací email zákazníkovi
     try {
         $company = DB::queryOne('SELECT id, name FROM companies WHERE id=? LIMIT 1', [(int)$ex['company_id']]);
-        $slots = DB::query('SELECT date, time_start FROM reservation_slots WHERE reservation_id=? ORDER BY date, time_start', [$rid]);
+        $slots = reservationSlots($rid);
         if ($company && $slots) {
-            $ref = ['date' => $slots[0]['date'], 'slotStarts' => array_column($slots, 'time_start')];
+            $ref = ['date' => $slots[0]['date'], 'slotStarts' => array_column($slots, 'time_start'), 'detailSlots'=>$slots, 'totalPrice'=>$ex['total_price']];
             $mailer->sendConfirmation($company, ['firstName' => $ex['customer_first_name'], 'lastName' => $ex['customer_last_name'], 'email' => $ex['customer_email'], 'phone' => $ex['customer_phone']], $ref, $rid);
         }
     } catch (\Throwable $e) { /* email selhal — nevadí */ }
@@ -542,14 +651,14 @@ if (preg_match('#^/admin/reservations/(\d+)/reject$#', $path, $m) && $method ===
     }catch(\Throwable $e){DB::rollback();errOut('Zamítnutí se nepodařilo uložit.',500);}
     try{
         $company=DB::queryOne('SELECT id,name FROM companies WHERE id=? LIMIT 1',[(int)$ex['company_id']]);
-        if($company&&$slots){$ref=['date'=>$slots[0]['date'],'slotStarts'=>array_column($slots,'time_start')];$mailer->sendRejection($company,['firstName'=>$ex['customer_first_name'],'lastName'=>$ex['customer_last_name'],'email'=>$ex['customer_email']],$ref,$rid,$reason);}
+        if($company&&$slots){$ref=['date'=>$slots[0]['date'],'slotStarts'=>array_column($slots,'time_start'),'detailSlots'=>$slots];$mailer->sendRejection($company,['firstName'=>$ex['customer_first_name'],'lastName'=>$ex['customer_last_name'],'email'=>$ex['customer_email']],$ref,$rid,$reason);}
     }catch(\Throwable $e){}
     jsonOut(['ok'=>true,'reservationId'=>$rid,'status'=>'rejected']);
 }
 
 // /admin/reservations/:id/cancel
 if (preg_match('#^/admin/reservations/(\d+)/cancel$#', $path, $m) && $method === 'PATCH') {
-    $a = getAdmin($auth); $rid = (int)$m[1];
+    $a = $emailActionAdmin ?? getAdmin($auth); $rid = (int)$m[1];
     $b = getJson(); $reason = trim($b['reason'] ?? '');
     if (!$rid) errOut('Neplatné ID rezervace.');
     $ex = DB::queryOne(
@@ -562,20 +671,24 @@ if (preg_match('#^/admin/reservations/(\d+)/cancel$#', $path, $m) && $method ===
     );
     if (!$ex) errOut('Rezervace neexistuje.', 404);
     if (!isSA($a) && (int)$ex['company_id'] !== (int)$a['company_id']) errOut('K této rezervaci nemáte přístup.', 403);
-    if ($ex['status'] !== 'confirmed') errOut('Stornovat lze pouze potvrzenou rezervaci.', 409);
+    if (!in_array($ex['status'], ['pending','confirmed'],true)) errOut('Stornovat lze pouze aktivní rezervaci.', 409);
 
     $slots = reservationSlots($rid);
     $suffix = $reason ? "\n[storno] $reason" : "\n[storno]";
-    DB::exec("UPDATE reservations SET status='cancelled',cancelled_by='admin',cancelled_at=NOW(),cancel_token_hash=NULL,note=CONCAT(IFNULL(note,''),?) WHERE id=?", [$suffix, $rid]);
-
-    // Uvolnit sloty, aby je mohli rezervovat jiní
-    DB::exec('DELETE FROM reservation_slots WHERE reservation_id=?', [$rid]);
+    DB::beginTransaction();
+    try {
+        if (DB::exec("UPDATE reservations SET status='cancelled',cancelled_by='admin',cancelled_at=NOW(),cancel_token_hash=NULL,note=CONCAT(IFNULL(note,''),?) WHERE id=? AND status IN ('pending','confirmed')", [$suffix, $rid]) !== 1) {
+            DB::rollback(); errOut('Rezervace už byla stornována nebo vyřízena.',409);
+        }
+        DB::exec('DELETE FROM reservation_slots WHERE reservation_id=?', [$rid]);
+        DB::commit();
+    } catch (Throwable $e) { DB::rollback(); errOut('Storno se nepodařilo uložit.',500); }
 
     // Poslat storno email zákazníkovi
     try {
         $company = DB::queryOne('SELECT id, name FROM companies WHERE id=? LIMIT 1', [(int)$ex['company_id']]);
         if ($ex['booking_type'] === 'customer' && $company && $slots) {
-            $ref = ['date' => $slots[0]['date'], 'slotStarts' => array_column($slots, 'time_start')];
+            $ref = ['date' => $slots[0]['date'], 'slotStarts' => array_column($slots, 'time_start'), 'detailSlots'=>$slots];
             $mailer->sendCancellation($company, ['firstName' => $ex['customer_first_name'], 'lastName' => $ex['customer_last_name'], 'email' => $ex['customer_email']], $ref, $rid, $reason);
         }
     } catch (\Throwable $e) { /* email selhal — nevadí */ }
@@ -664,7 +777,7 @@ if ($path === '/admin/email-templates') {
     if ($method === 'PUT') {
         $b = getJson();
         $type = trim($b['type'] ?? '');
-        if (!in_array($type, ['customer_summary', 'confirmation', 'cancellation', 'rejection'], true)) {
+        if (!in_array($type, ['customer_summary', 'confirmation', 'cancellation', 'rejection', 'customer_cancellation', 'admin_customer_cancellation'], true)) {
             errOut('Neplatný typ emailové šablony.');
         }
         $subject = trim($b['subject'] ?? '');

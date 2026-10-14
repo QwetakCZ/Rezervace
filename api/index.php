@@ -41,8 +41,10 @@ function hashPw(string $p):string{return password_hash($p,PASSWORD_BCRYPT,['cost
 function getBookingSettings(int $cid,int $def):array{return getBS($cid,$def);}
 function appUrl(array $config):string{return rtrim((string)($config['app']['url']??'https://rezervace.tt-denik.cz'),'/');}
 function reservationSlots(int $reservationId):array{return DB::query('SELECT date,time_start,time_end,price,resource_id FROM reservation_slots WHERE reservation_id=? ORDER BY date,time_start',[$reservationId]);}
+require __DIR__.'/reservation-actions.php';
 $routed=require __DIR__.'/routes/public.php';if($routed)exit;
 $routed=require __DIR__.'/routes/player.php';if($routed)exit;
 $routed=require __DIR__.'/routes/admin.php';if($routed)exit;
+$routed=require __DIR__.'/routes/directory.php';if($routed)exit;
 $routed=require __DIR__.'/routes/admin2.php';if($routed)exit;
 errOut('Endpoint nenalezen: '.$path,404);
