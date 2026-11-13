@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 const frontendDir = resolve(process.cwd());
@@ -10,7 +10,9 @@ const generatedAssets = Array.from(
   indexHtml.matchAll(/(?:src|href)="\.\/([^"?#]+)["?#]/g),
   (match) => match[1],
 );
-const filesToCopy = ["index.html", ...new Set(generatedAssets)];
+// Imported SVG logos are referenced by the JS bundle rather than index.html.
+const svgAssets = readdirSync(distDir).filter((fileName) => fileName.endsWith(".svg"));
+const filesToCopy = ["index.html", ...new Set([...generatedAssets, ...svgAssets])];
 
 for (const fileName of filesToCopy) {
   const source = resolve(distDir, fileName);

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, finishPlayerAccountAction } from "./api";
 import ContactDirectory from "./ContactDirectory";
+import luraLogo from "./assets/lura-it-mark.svg";
+import luraLogoWhite from "./assets/lura-it-mark-white.svg";
 import {
   Trophy,
   Calendar,
@@ -14,6 +16,7 @@ import {
   Dumbbell,
   Settings,
   Star,
+  Heart,
 } from "lucide-react";
 
 function getCurrentLocalDateKey() {
@@ -1775,8 +1778,17 @@ function ReservationPage() {
         {error && <p className="status error">{error}</p>}
 
         <footer className="widgetFooter">
-          <img src={appPath("/logo-lura.png")} alt="LuRa IT" />
-          <span>Vyvinuto s <span className="heart">❤</span> od <a href="https://lura-it.eu/" target="_blank" rel="noreferrer">LuRa IT Develop</a>. © {new Date().getFullYear()}</span>
+          <a className="widgetFooterBrand" href="https://lura-it.eu/" target="_blank" rel="noopener noreferrer" aria-label="Vyvinuto s láskou od LuRa IT Develop — otevřít web v nové záložce">
+            <span className="widgetFooterLogo" aria-hidden="true">
+              <img className="widgetFooterLogoLight" src={luraLogo} width="22" height="18" alt="" />
+              <img className="widgetFooterLogoDark" src={luraLogoWhite} width="22" height="18" alt="" />
+            </span>
+            <span className="widgetFooterSignature">
+              <span className="widgetFooterCredit"><span className="widgetFooterVerb">Vyvinuto</span> s <Heart className="widgetFooterHeart" size={11} strokeWidth={1.8} aria-hidden="true" /> od</span>
+              <span className="widgetFooterName">LuRa IT Develop</span>
+            </span>
+          </a>
+          <span className="widgetFooterCopyright">© {new Date().getFullYear()}</span>
         </footer>
       </section>
     </main>
@@ -3454,7 +3466,7 @@ function AdminDashboardPage() {
              >
                <item.Icon className="adminNavIcon" size={20} />
                <span>{item.label}</span>
-                {Number(item.count) > 0 && <span className="adminNavCount">{item.count}</span>}
+                {Number(item.count) > 0 && <span className="adminNavCount" title={`Nevyřízené rezervace: ${item.count}`} aria-label={`Nevyřízené rezervace: ${item.count}`}>{item.count}</span>}
              </button>
            ))}
          </nav>

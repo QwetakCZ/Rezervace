@@ -318,33 +318,112 @@ html.is-embedded[data-theme-mode="light"] .wizardShell {
 }
 
 .widgetFooter {
-  margin-top: 32px;
-  padding-top: 16px;
+  --lura-accent: #2ccfc8;
+  margin-top: 20px;
+  padding-top: 8px;
   border-top: 1px solid var(--line-soft);
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  flex-wrap: nowrap;
+  gap: 8px;
   color: var(--text-soft);
+  font-family: Inter, "Segoe UI", Roboto, Arial, sans-serif;
   font-size: 12px;
 }
 
-.widgetFooter img {
-  height: 18px;
-}
-
-.widgetFooter a {
-  color: inherit;
-  font-weight: 700;
+.widgetFooterBrand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  min-width: 0;
+  max-width: 100%;
+  border-radius: 8px;
   text-decoration: none;
 }
 
-.widgetFooter a:hover {
-  text-decoration: underline;
+.widgetFooterLogo {
+  position: relative;
+  width: 22px;
+  height: 18px;
+  flex: 0 0 22px;
 }
 
-.widgetFooter .heart {
-  color: #e11d48;
+.widgetFooterLogo img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.widgetFooterLogoLight,
+html[data-theme-mode="light"] .widgetFooterLogoDark {
+  display: none;
+}
+
+html[data-theme-mode="light"] .widgetFooterLogoLight {
+  display: block;
+}
+
+.widgetFooterSignature {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.widgetFooterCredit,
+.widgetFooterName {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  line-height: 1.4;
+}
+
+.widgetFooterCredit {
+  color: var(--text-soft);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.widgetFooterName {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+
+.widgetFooterBrand:hover .widgetFooterName {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.widgetFooterBrand:focus-visible {
+  outline: 2px solid var(--lura-accent);
+  outline-offset: 4px;
+}
+
+.widgetFooterHeart {
+  color: var(--lura-accent);
+  fill: none;
+  flex-shrink: 0;
+}
+
+.widgetFooterCopyright {
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+@media (max-width: 360px) {
+  .widgetFooterVerb {
+    display: none;
+  }
+  .widgetFooter {
+    gap: 6px;
+  }
 }
 
 .statCard--clickable {
@@ -1955,6 +2034,7 @@ button:disabled {
 
 .adminNavCount {
   margin-left: auto;
+  flex-shrink: 0;
   min-width: 22px;
   height: 22px;
   padding: 0 6px;
@@ -1962,11 +2042,14 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(var(--warning-rgb), 0.2);
-  border: 1px solid rgba(var(--warning-rgb), 0.45);
-  color: var(--warning-ink);
+  /* Alert stays legible on the dark sidebar regardless of the club palette. */
+  background: #dc2626;
+  border: 1px solid #fca5a5;
+  color: #fff;
   font-size: 12px;
   font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ===== Superadmin dashboard ===== */
